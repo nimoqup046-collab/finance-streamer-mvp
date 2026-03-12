@@ -1,0 +1,223 @@
+"""
+财经主播助手 MVP 版本
+FastAPI 主入口
+"""
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import List, Optional
+import os
+from datetime import datetime
+
+from backend.config import CORS_ORIGINS, PORT
+from backend.fetcher import fetcher
+from backend.generator import generator
+
+# 创建FastAPI应用
+app = FastAPI(
+    title="财经主播助手 MVP",
+    description="财经新闻自动采集与内容生成工具",
+    version="1.0.0"
+)
+
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 请求模型
+class GenerateRequest(BaseModel):
+    news_ids: List[str]
+    content_type: str  # stream_script, article, deep_dive
+    duration: Optional[int] = 30
+    style: Optional[str] = "专业"
+    title: Optional[str] = ""
+
+class NewsItem(BaseModel):
+    id: str
+    title: str
+    source: str
+    url: str
+    time: str
+    category: str
+
+# 内存存储（MVP版本够用）
+news_cache: List[dict] = []
+cache_time: datetime = None
+
+# 健康检查
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    }
+
+# 获取新闻列表
+@app.get("/api/news")
+async def get_news(refresh: bool = False):
+    """获取今日财经新闻"""
+    global news_cache, cache_time
+
+    # 检查缓存
+    if not refresh and news_cache:
+        cache_age = (datetime.now() - cache_time).seconds
+        if cache_age < 1800:  # 30分钟内有效
+            return {
+                "data": news_cache,
+                "count": len(news_cache),
+                "cached": True,
+                "update_time": cache_time.isoformat()
+            }
+
+    # 获取新新闻
+    try:
+        # MVP版本先用模拟数据
+        news_list = await fetcher.fetch_mock_news()
+        # 真实环境使用下面这行：
+        # news_list = await fetcher.fetch_all_news()
+
+        news_cache = news_list
+        cache_time = datetime.now()
+
+        return {
+            "data": news_cache,
+            "count": len(news_cache),
+            "cached": False,
+            "update_time": cache_time.isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 获取新闻分类
+@app.get("/api/news/categories")
+async def get_categories():
+    """获取新闻分类"""
+    return {
+        "categories": ["宏观", "A股", "美股", "行业", "个股", "财经"],
+        "sources": ["东方财富网", "新浪财经", "财联社"]
+    }
+
+# 生成内容
+@app.post("/api/generate")
+async def generate_content(request: GenerateRequest):
+    """生成指定类型的内容"""
+    global news_cache
+
+    # 根据ID筛选新闻
+    selected_news = [n for n in news_cache if n["id"] in request.news_ids]
+
+    if not selected_news:
+        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+
+    try:
+        if request.content_type == "stream_script":
+            content = await generator.generate_stream_script(
+                selected_news,
+                duration=request.duration or 30,
+                style=request.style or "专业"
+            )
+            return {
+                "type": "stream_script",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "article":
+            result = await generator.generate_article(
+                selected_news,
+                title=request.title or ""
+            )
+            return {
+                "type": "article",
+                **result,
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "deep_dive":
+            content = await generator.generate_deep_dive(selected_news)
+            return {
+                "type": "deep_dive",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        else:
+            raise HTTPException(status_code=400, detail="不支持的内容类型")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+# 批量生成（一键生成全部）
+@app.post("/api/generate/all")
+async def generate_all(news_ids: List[str]):
+    """一键生成所有类型的内容"""
+    global news_cache
+
+    selected_news = [n for n in news_cache if n["id"] in news_ids]
+
+    if not selected_news:
+        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+
+    try:
+        results = {
+            "stream_script": await generator.generate_stream_script(selected_news),
+            "article": await generator.generate_article(selected_news),
+            "deep_dive": await generator.generate_deep_dive(selected_news),
+            "generated_at": datetime.now().isoformat()
+        }
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+# 获取系统状态
+@app.get("/api/status")
+async def get_status():
+    """获取系统状态"""
+    return {
+        "status": "running",
+        "news_count": len(news_cache),
+        "last_update": cache_time.isoformat() if cache_time else None,
+        "features": {
+            "stream_script": True,
+            "article": True,
+            "deep_dive": True,
+            "ppt": False,  # 待开发
+            "infographic": False  # 待开发
+        }
+    }
+
+# 挂载前端静态文件
+frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
+
+# 启动说明
+@app.get("/")
+async def root():
+    """根路径"""
+    return {
+        "message": "财经主播助手 MVP 版本",
+        "version": "1.0.0",
+        "endpoints": {
+            "news": "/api/news",
+            "generate": "/api/generate",
+            "status": "/api/status",
+            "health": "/health"
+        }
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

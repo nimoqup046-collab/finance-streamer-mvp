@@ -1,0 +1,21 @@
+# Railway.app 部署配置
+# 无需 Docker，直接部署
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+
+[variables]
+PORT = "8000"
+PYTHON_VERSION = "3.10"
+
+[[services]]
+name = "web"
+protocol = "tcp"
+
+[[services.ports]]
+port = 8000
+handlers = ["http"]

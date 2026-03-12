@@ -1,0 +1,275 @@
+"""
+财经新闻爬取模块
+参考 https://github.com/cxyo/xw 项目
+"""
+import asyncio
+import aiohttp
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from typing import List, Dict
+import json
+
+# 新闻源配置
+NEWS_SOURCES = {
+    "eastmoney": {
+        "name": "东方财富网",
+        "url": "https://finance.eastmoney.com/a/cjkx.html",
+        "list_selector": "li.list-item",
+        "title_selector": "a",
+        "link_selector": "a",
+        "time_selector": "span.time",
+    },
+    "sina": {
+        "name": "新浪财经",
+        "url": "https://finance.sina.com.cn/",
+        "list_selector": ".news-item",
+        "title_selector": "a",
+        "link_selector": "a",
+    },
+    "cls": {
+        "name": "财联社",
+        "url": "https://www.cls.cn/telegraph",
+        "list_selector": ".telegraph-item",
+        "title_selector": "h3",
+        "link_selector": "a",
+    }
+}
+
+
+class NewsFetcher:
+    """新闻爬取器"""
+
+    def __init__(self):
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+    async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> str:
+        """获取页面内容"""
+        try:
+            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                return await response.text(errors="ignore")
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+            return ""
+
+    def parse_eastmoney(self, html: str) -> List[Dict]:
+        """解析东方财富网新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+
+        # 东方财富网的快讯在 script 标签的 JSON 数据中
+        for script in soup.find_all("script"):
+            script_text = script.string
+            if script_text and "liveData" in script_text:
+                try:
+                    # 提取JSON数据
+                    start = script_text.find("liveData:")
+                    if start > 0:
+                        end = script_text.find("}", start + 200) + 1
+                        # 简化处理：直接解析页面结构
+                except:
+                    pass
+
+        # 备用方案：解析新闻列表
+        for item in soup.select("li")[:30]:
+            title_elem = item.select_one("a")
+            if title_elem and title_elem.get("href"):
+                title = title_elem.get_text(strip=True)
+                if len(title) > 10 and "股市" in title or "A股" in title or "央行" in title or "板块" in title:
+                    news_list.append({
+                        "title": title,
+                        "source": "东方财富网",
+                        "url": "https://finance.eastmoney.com" + title_elem.get("href", ""),
+                        "time": datetime.now().strftime("%H:%M")
+                    })
+                    if len(news_list) >= 20:
+                        break
+
+        return news_list
+
+    def parse_sina(self, html: str) -> List[Dict]:
+        """解析新浪财经新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+
+        for item in soup.select(".blk_hdline_01, .news-item")[:20]:
+            title_elem = item.select_one("a")
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                if len(title) > 10:
+                    news_list.append({
+                        "title": title,
+                        "source": "新浪财经",
+                        "url": title_elem.get("href", ""),
+                        "time": datetime.now().strftime("%H:%M")
+                    })
+
+        return news_list
+
+    def parse_cls(self, html: str) -> List[Dict]:
+        """解析财联社电报"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+
+        for item in soup.select(".telegraph-list .item")[:20]:
+            title_elem = item.select_one(".text")
+            time_elem = item.select_one(".time")
+
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                time_str = time_elem.get_text(strip=True) if time_elem else ""
+
+                if len(title) > 10:
+                    news_list.append({
+                        "title": title,
+                        "source": "财联社",
+                        "url": "",
+                        "time": time_str or datetime.now().strftime("%H:%M")
+                    })
+
+        return news_list
+
+    async def fetch_all_news(self) -> List[Dict]:
+        """从所有源获取新闻"""
+        all_news = []
+
+        async with aiohttp.ClientSession() as session:
+            # 东方财富网
+            try:
+                html = await self.fetch_url(session, NEWS_SOURCES["eastmoney"]["url"])
+                if html:
+                    news = self.parse_eastmoney(html)
+                    all_news.extend(news)
+            except Exception as e:
+                print(f"Eastmoney error: {e}")
+
+            # 新浪财经
+            try:
+                html = await self.fetch_url(session, NEWS_SOURCES["sina"]["url"])
+                if html:
+                    news = self.parse_sina(html)
+                    all_news.extend(news)
+            except Exception as e:
+                print(f"Sina error: {e}")
+
+        # 去重
+        seen_titles = set()
+        unique_news = []
+        for news in all_news:
+            title_key = news["title"][:20]  # 用前20个字符去重
+            if title_key not in seen_titles:
+                seen_titles.add(title_key)
+                unique_news.append(news)
+
+        # 添加分类标签
+        for news in unique_news:
+            news["category"] = self._categorize_news(news["title"])
+            news["id"] = f"{news['source']}_{hash(news['title']) % 10000}"
+
+        return unique_news[:50]  # 返回最新50条
+
+    def _categorize_news(self, title: str) -> str:
+        """根据标题给新闻分类"""
+        keywords = {
+            "宏观": ["央行", "降准", "加息", "GDP", "通胀", "政策", "国务院"],
+            "A股": ["A股", "上证", "深证", "创业板", "指数", "大盘", "股市"],
+            "美股": ["美股", "纳斯达克", "标普", "道指", "美联储", "华尔街"],
+            "行业": ["新能源", "芯片", "半导体", "医药", "白酒", "房地产", "银行"],
+            "个股": ["涨停", "跌停", "公告", "重组", "并购", "业绩"],
+        }
+
+        for category, kw_list in keywords.items():
+            if any(kw in title for kw in kw_list):
+                return category
+
+        return "财经"
+
+    async def fetch_mock_news(self) -> List[Dict]:
+        """模拟新闻数据（用于测试）"""
+        return [
+            {
+                "id": "mock_1",
+                "title": "央行宣布下调存款准备金率0.25个百分点，释放长期资金约5000亿元",
+                "source": "东方财富网",
+                "url": "",
+                "time": "10:30",
+                "category": "宏观"
+            },
+            {
+                "id": "mock_2",
+                "title": "A股三大指数集体收涨，创业板指涨超2%，新能源板块爆发",
+                "source": "财联社",
+                "url": "",
+                "time": "15:00",
+                "category": "A股"
+            },
+            {
+                "id": "mock_3",
+                "title": "美联储暗示可能在下季度暂停加息，美股科技股大涨",
+                "source": "新浪财经",
+                "url": "",
+                "time": "09:45",
+                "category": "美股"
+            },
+            {
+                "id": "mock_4",
+                "title": "半导体板块持续走强，多家公司业绩预增超预期",
+                "source": "东方财富网",
+                "url": "",
+                "time": "14:20",
+                "category": "行业"
+            },
+            {
+                "id": "mock_5",
+                "title": "白酒板块震荡调整，高端白酒龙头股领跌",
+                "source": "财联社",
+                "url": "",
+                "time": "13:50",
+                "category": "行业"
+            },
+            {
+                "id": "mock_6",
+                "title": "国家发改委：将出台新一轮促消费政策，重点支持新能源汽车",
+                "source": "新浪财经",
+                "url": "",
+                "time": "11:00",
+                "category": "宏观"
+            },
+            {
+                "id": "mock_7",
+                "title": "北向资金净流入超50亿元，连续5日加仓A股",
+                "source": "财联社",
+                "url": "",
+                "time": "15:30",
+                "category": "A股"
+            },
+            {
+                "id": "mock_8",
+                "title": "人工智能概念股集体拉升，算力板块领涨",
+                "source": "东方财富网",
+                "url": "",
+                "time": "10:15",
+                "category": "行业"
+            },
+            {
+                "id": "mock_9",
+                "title": "国际油价大幅波动，布伦特原油跌破80美元关口",
+                "source": "新浪财经",
+                "url": "",
+                "time": "08:30",
+                "category": "宏观"
+            },
+            {
+                "id": "mock_10",
+                "title": "多家券商发布研报：看好A股后市，建议关注低估值蓝筹",
+                "source": "财联社",
+                "url": "",
+                "time": "16:00",
+                "category": "A股"
+            }
+        ]
+
+
+# 全局实例
+fetcher = NewsFetcher()

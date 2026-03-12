@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>财经主播助手</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 顶部导航 -->
+        <header class="header">
+            <div class="container">
+                <h1 class="logo">📊 财经主播助手</h1>
+                <div class="header-info">
+                    <span class="time">{{ currentTime }}</span>
+                    <button @click="refreshNews" class="btn-icon" :disabled="loading">
+                        🔄 刷新
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main">
+            <div class="container">
+                <!-- 左侧：新闻列表 -->
+                <section class="news-section">
+                    <div class="section-header">
+                        <h2>📰 今日新闻 ({{ news.length }}条)</h2>
+                        <div class="filters">
+                            <button
+                                v-for="cat in categories"
+                                :key="cat"
+                                @click="filterCategory = cat"
+                                :class="['filter-btn', { active: filterCategory === cat }]"
+                            >
+                                {{ cat }}
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 全选操作 -->
+                    <div class="actions-bar">
+                        <label class="checkbox-label">
+                            <input type="checkbox" v-model="allSelected" @change="toggleAll">
+                            <span>全选 ({{ selectedCount }})</span>
+                        </label>
+                        <button
+                            @click="generateContent('stream_script')"
+                            :disabled="selectedCount === 0"
+                            class="btn btn-primary"
+                        >
+                            📝 生成直播稿
+                        </button>
+                    </div>
+
+                    <!-- 新闻列表 -->
+                    <div class="news-list">
+                        <div
+                            v-for="item in filteredNews"
+                            :key="item.id"
+                            :class="['news-item', { selected: selectedNews.includes(item.id) }]"
+                        >
+                            <label class="news-checkbox">
+                                <input
+                                    type="checkbox"
+                                    :value="item.id"
+                                    v-model="selectedNews"
+                                >
+                            </label>
+                            <div class="news-content">
+                                <h3 class="news-title">{{ item.title }}</h3>
+                                <div class="news-meta">
+                                    <span class="source">{{ item.source }}</span>
+                                    <span class="time">{{ item.time }}</span>
+                                    <span class="category" :data-category="item.category">
+                                        {{ item.category }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="filteredNews.length === 0" class="empty-state">
+                            <p>暂无新闻</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 右侧：生成区域 -->
+                <section class="generate-section">
+                    <div class="section-header">
+                        <h2>🚀 内容生成</h2>
+                    </div>
+
+                    <!-- 生成按钮组 -->
+                    <div class="generate-buttons">
+                        <button
+                            @click="generateContent('stream_script')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-script"
+                        >
+                            <span class="icon">📝</span>
+                            <span class="text">直播稿</span>
+                        </button>
+                        <button
+                            @click="generateContent('article')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-article"
+                        >
+                            <span class="icon">📱</span>
+                            <span class="text">公众号</span>
+                        </button>
+                        <button
+                            @click="generateContent('deep_dive')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-deep"
+                        >
+                            <span class="icon">📄</span>
+                            <span class="text">深度长文</span>
+                        </button>
+                        <button
+                            @click="generateAll"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-all"
+                        >
+                            <span class="icon">📦</span>
+                            <span class="text">全部生成</span>
+                        </button>
+                    </div>
+
+                    <!-- 生成结果 -->
+                    <div v-if="result" class="result-section">
+                        <div class="result-header">
+                            <h3>{{ resultTitle }}</h3>
+                            <div class="result-actions">
+                                <button @click="copyResult" class="btn-small">📋 复制</button>
+                                <button @click="downloadResult" class="btn-small">💾 下载</button>
+                                <button @click="result = null" class="btn-small btn-close">✕</button>
+                            </div>
+                        </div>
+                        <div class="result-content">
+                            <pre>{{ resultContent }}</pre>
+                        </div>
+                    </div>
+
+                    <!-- 加载状态 -->
+                    <div v-if="generating" class="loading-state">
+                        <div class="spinner"></div>
+                        <p>AI正在生成内容，请稍候...</p>
+                    </div>
+
+                    <!-- 提示信息 -->
+                    <div v-if="!result && !generating" class="tips-section">
+                        <h3>💡 使用提示</h3>
+                        <ol>
+                            <li>在左侧勾选需要播报的新闻</li>
+                            <li>点击上方生成按钮选择内容类型</li>
+                            <li>等待2-3分钟，AI将自动生成内容</li>
+                            <li>生成完成后可直接复制或下载</li>
+                        </ol>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <!-- 复制成功提示 -->
+        <transition name="fade">
+            <div v-if="showToast" class="toast">{{ toastMessage }}</div>
+        </transition>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
