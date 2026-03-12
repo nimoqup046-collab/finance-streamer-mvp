@@ -2,12 +2,18 @@
 财经主播助手 MVP 版本
 FastAPI 主入口
 """
+import sys
+import os
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
-import os
 from datetime import datetime
 
 from backend.config import CORS_ORIGINS, PORT
@@ -197,9 +203,9 @@ async def get_status():
     }
 
 # 挂载前端静态文件
-frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+frontend_path = Path(__file__).parent.parent / "frontend"
 if os.path.exists(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
 
 
 # 启动说明
