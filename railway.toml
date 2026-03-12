@@ -1,14 +1,10 @@
-# Railway.app 部署配置
-
 [build]
 builder = "NIXPACKS"
 
+[build.env]
+PORT = "8000"
+
 [deploy]
-startCommand = "python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-
-[variables]
-PORT = "8000"
-PYTHON_VERSION = "3.10"
