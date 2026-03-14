@@ -3,14 +3,16 @@
 参考 https://github.com/cxyo/xw 项目
 """
 import asyncio
+import difflib
 import hashlib
 import aiohttp
 import json
 import logging
 import re
 from datetime import datetime
+from typing import Dict, List
+
 from bs4 import BeautifulSoup
-from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,14 @@ NEWS_SOURCES = {
         "list_selector": ".telegraph-item",
         "title_selector": "h3",
         "link_selector": "a",
-    }
+    },
+    "yicai": {
+        "name": "第一财经",
+        "url": "https://www.yicai.com/news/",
+        "list_selector": ".m-newslist li",
+        "title_selector": "h2 a, .title a",
+        "link_selector": "a",
+    },
 }
 
 
@@ -46,13 +55,20 @@ class NewsFetcher:
 
     def __init__(self):
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+            )
         }
 
     async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> str:
         """获取页面内容"""
         try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(
+                url,
+                headers=self.headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
                 return await response.text(errors="ignore")
         except Exception as e:
             logger.warning("Error fetching %s: %s", url, e)
@@ -63,20 +79,16 @@ class NewsFetcher:
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
-        # 东方财富网的快讯在 script 标签的 JSON 数据中
         for script in soup.find_all("script"):
             script_text = script.string
             if script_text and "liveData" in script_text:
                 try:
-                    # 提取JSON数据
                     start = script_text.find("liveData:")
                     if start > 0:
-                        end = script_text.find("}", start + 200) + 1
-                        # 简化处理：直接解析页面结构
-                except:
+                        _ = script_text.find("}", start + 200) + 1
+                except Exception:
                     pass
 
-        # 备用方案：解析新闻列表
         for item in soup.select("li")[:30]:
             title_elem = item.select_one("a")
             if title_elem and title_elem.get("href"):
@@ -86,7 +98,7 @@ class NewsFetcher:
                         "title": title,
                         "source": "东方财富网",
                         "url": "https://finance.eastmoney.com" + title_elem.get("href", ""),
-                        "time": datetime.now().strftime("%H:%M")
+                        "time": datetime.now().strftime("%H:%M"),
                     })
                     if len(news_list) >= 20:
                         break
@@ -107,8 +119,49 @@ class NewsFetcher:
                         "title": title,
                         "source": "新浪财经",
                         "url": title_elem.get("href", ""),
-                        "time": datetime.now().strftime("%H:%M")
+                        "time": datetime.now().strftime("%H:%M"),
                     })
+
+        return news_list
+
+    def parse_yicai(self, html: str) -> List[Dict]:
+        """解析第一财经新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+        seen_titles = set()
+
+        selectors = [
+            ".m-newslist li a[href*='/news/']",
+            ".f-list li a[href*='/news/']",
+            "article a[href*='/news/']",
+            "a[href*='/news/']",
+        ]
+        anchors = []
+        for selector in selectors:
+            anchors = soup.select(selector)
+            if anchors:
+                break
+
+        for anchor in anchors:
+            title = anchor.get_text(" ", strip=True)
+            href = anchor.get("href", "").strip()
+            if len(title) <= 10 or not href:
+                continue
+            if title in seen_titles:
+                continue
+
+            if href.startswith("/"):
+                href = f"https://www.yicai.com{href}"
+
+            seen_titles.add(title)
+            news_list.append({
+                "title": title,
+                "source": "第一财经",
+                "url": href,
+                "time": datetime.now().strftime("%H:%M"),
+            })
+            if len(news_list) >= 20:
+                break
 
         return news_list
 
@@ -117,7 +170,7 @@ class NewsFetcher:
         next_data_match = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
             html,
-            re.DOTALL
+            re.DOTALL,
         )
         if next_data_match:
             try:
@@ -142,14 +195,13 @@ class NewsFetcher:
                         "title": title,
                         "source": "财联社",
                         "url": detail_url,
-                        "time": self._format_cls_time(item.get("ctime") or item.get("created_at"))
+                        "time": self._format_cls_time(item.get("ctime") or item.get("created_at")),
                     })
                 if parsed_items:
                     return parsed_items
             except Exception as e:
                 logger.warning("CLS next data parse error: %s", e)
 
-        # 解析财联社电报
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
@@ -160,13 +212,12 @@ class NewsFetcher:
             if title_elem:
                 title = title_elem.get_text(strip=True)
                 time_str = time_elem.get_text(strip=True) if time_elem else ""
-
                 if len(title) > 10:
                     news_list.append({
                         "title": title,
                         "source": "财联社",
                         "url": "",
-                        "time": time_str or datetime.now().strftime("%H:%M")
+                        "time": time_str or datetime.now().strftime("%H:%M"),
                     })
 
         return news_list
@@ -204,51 +255,87 @@ class NewsFetcher:
         try:
             html = await self.fetch_url(session, source["url"])
             if not html:
+                logger.warning("%s 未返回内容", source["name"])
                 return []
             parse_fn = getattr(self, f"parse_{source_key}")
-            return parse_fn(html)
+            parsed = parse_fn(html)
+            logger.info("新闻源 %s 抓取成功，获取 %s 条", source["name"], len(parsed))
+            return parsed
         except Exception as e:
             logger.warning("%s fetch error: %s", source_key, e)
             return []
 
     async def fetch_all_news(self) -> List[Dict]:
         """从所有源并发获取新闻"""
-        all_news = []
+        all_news: List[Dict] = []
 
         async with aiohttp.ClientSession() as session:
             results = await asyncio.gather(
                 self._fetch_source(session, "cls"),
                 self._fetch_source(session, "eastmoney"),
                 self._fetch_source(session, "sina"),
+                self._fetch_source(session, "yicai"),
                 return_exceptions=True,
             )
-            for r in results:
-                if isinstance(r, list):
-                    all_news.extend(r)
-                elif isinstance(r, Exception):
-                    logger.warning("Source fetch raised: %s", r)
+            for result in results:
+                if isinstance(result, list):
+                    all_news.extend(result)
+                elif isinstance(result, Exception):
+                    logger.warning("Source fetch raised: %s", result)
 
         if not all_news:
             raise RuntimeError("所有新闻源均未返回有效内容")
 
-        # 去重（按标题前20字符）
-        seen_titles: set = set()
-        unique_news = []
-        for news in all_news:
-            title_key = news["title"][:20]
-            if title_key not in seen_titles:
-                seen_titles.add(title_key)
-                unique_news.append(news)
+        logger.info("新闻去重前共 %s 条", len(all_news))
+        unique_news = self._deduplicate_news(all_news)
+        logger.info("新闻去重后剩余 %s 条", len(unique_news))
 
-        # 添加分类标签和稳定 ID
         for news in unique_news:
             news["category"] = self._categorize_news(news["title"])
-            stable_hash = hashlib.md5(
-                f"{news['source']}:{news['title']}".encode()
-            ).hexdigest()[:8]
+            stable_hash = hashlib.md5(f"{news['source']}:{news['title']}".encode()).hexdigest()[:8]
             news["id"] = f"{news['source']}_{stable_hash}"
 
-        return unique_news[:50]  # 返回最新50条
+        return unique_news[:50]
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        """标准化标题：去除空白、标点，转小写，便于相似度比较"""
+        return re.sub(r"[\s\W]", "", title).lower()
+
+    def _deduplicate_news(self, news_list: List[Dict]) -> List[Dict]:
+        """基于标题相似度进行去重。"""
+        min_substring_length = 8
+        similarity_threshold = 0.75
+
+        unique_news: List[Dict] = []
+        seen_normalized: List[str] = []
+
+        for news in news_list:
+            norm = self._normalize_title(news["title"])
+            if not norm:
+                continue
+
+            is_dup = False
+            for seen in seen_normalized:
+                if norm == seen:
+                    is_dup = True
+                    break
+
+                shorter, longer = (norm, seen) if len(norm) <= len(seen) else (seen, norm)
+                if len(shorter) >= min_substring_length and shorter in longer:
+                    is_dup = True
+                    break
+
+                ratio = difflib.SequenceMatcher(None, norm, seen).ratio()
+                if ratio >= similarity_threshold:
+                    is_dup = True
+                    break
+
+            if not is_dup:
+                unique_news.append(news)
+                seen_normalized.append(norm)
+
+        return unique_news
 
     def _categorize_news(self, title: str) -> str:
         """根据标题给新闻分类"""
@@ -275,7 +362,7 @@ class NewsFetcher:
                 "source": "东方财富网",
                 "url": "",
                 "time": "10:30",
-                "category": "宏观"
+                "category": "宏观",
             },
             {
                 "id": "mock_2",
@@ -283,7 +370,7 @@ class NewsFetcher:
                 "source": "财联社",
                 "url": "",
                 "time": "15:00",
-                "category": "A股"
+                "category": "A股",
             },
             {
                 "id": "mock_3",
@@ -291,7 +378,7 @@ class NewsFetcher:
                 "source": "新浪财经",
                 "url": "",
                 "time": "09:45",
-                "category": "美股"
+                "category": "美股",
             },
             {
                 "id": "mock_4",
@@ -299,7 +386,7 @@ class NewsFetcher:
                 "source": "东方财富网",
                 "url": "",
                 "time": "14:20",
-                "category": "行业"
+                "category": "行业",
             },
             {
                 "id": "mock_5",
@@ -307,7 +394,7 @@ class NewsFetcher:
                 "source": "财联社",
                 "url": "",
                 "time": "13:50",
-                "category": "行业"
+                "category": "行业",
             },
             {
                 "id": "mock_6",
@@ -315,7 +402,7 @@ class NewsFetcher:
                 "source": "新浪财经",
                 "url": "",
                 "time": "11:00",
-                "category": "宏观"
+                "category": "宏观",
             },
             {
                 "id": "mock_7",
@@ -323,7 +410,7 @@ class NewsFetcher:
                 "source": "财联社",
                 "url": "",
                 "time": "15:30",
-                "category": "A股"
+                "category": "A股",
             },
             {
                 "id": "mock_8",
@@ -331,7 +418,7 @@ class NewsFetcher:
                 "source": "东方财富网",
                 "url": "",
                 "time": "10:15",
-                "category": "行业"
+                "category": "行业",
             },
             {
                 "id": "mock_9",
@@ -339,7 +426,7 @@ class NewsFetcher:
                 "source": "新浪财经",
                 "url": "",
                 "time": "08:30",
-                "category": "宏观"
+                "category": "宏观",
             },
             {
                 "id": "mock_10",
@@ -347,10 +434,9 @@ class NewsFetcher:
                 "source": "财联社",
                 "url": "",
                 "time": "16:00",
-                "category": "A股"
-            }
+                "category": "A股",
+            },
         ]
 
 
-# 全局实例
 fetcher = NewsFetcher()

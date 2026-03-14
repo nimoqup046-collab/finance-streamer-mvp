@@ -245,6 +245,15 @@
                             <span class="text">全部生成</span>
                             <span class="gen-hint">三合一</span>
                         </button>
+                        <button
+                            @click="generatePpt"
+                            :disabled="selectedCount === 0 || generatingPpt"
+                            class="gen-btn gen-ppt"
+                        >
+                            <span class="icon">{{ generatingPpt ? '⏳' : '📊' }}</span>
+                            <span class="text">{{ generatingPpt ? '生成中…' : 'PPT下载' }}</span>
+                            <span class="gen-hint">汇报版</span>
+                        </button>
                     </div>
 
                     <!-- 生成进度步骤 -->
@@ -267,6 +276,10 @@
                             </div>
                         </div>
                         <p class="progress-tip">{{ progressSteps[progressStep].tip }}</p>
+                        <div v-if="streamingPreview" class="stream-preview">
+                            <div class="stream-preview-header">实时生成预览</div>
+                            <pre class="stream-preview-content">{{ streamingPreview }}</pre>
+                        </div>
                     </div>
 
                     <!-- 全部生成时的tab切换 -->

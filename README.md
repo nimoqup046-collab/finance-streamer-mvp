@@ -10,7 +10,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| **📰 新闻采集** | 并发从东方财富、新浪财经、财联社获取最新新闻 |
+| **📰 新闻采集** | 并发从东方财富、新浪财经、财联社、第一财经获取最新新闻 |
 | **🔍 关键词搜索** | 实时在新闻列表中按标题/分类/来源搜索 |
 | **📝 直播稿生成** | 根据选中新闻生成专业直播脚本，支持时长和风格调节 |
 | **📱 公众号文章** | 生成可直接粘贴到微信公众号的格式化文章 |
@@ -18,6 +18,8 @@
 | **🚀 一键全部生成** | 三种格式**并行**生成，比逐个生成快 3 倍 |
 | **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看三种结果 |
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
+| **📊 PPT 导出** | 根据选中新闻直接下载结构化汇报版 PPT |
+| **🌊 流式生成** | 直播稿和全部生成支持渐进式输出，等待过程可见 |
 
 ---
 
@@ -94,10 +96,10 @@ systemctl restart finance-assistant
 ```
 finance-streamer-mvp/
 ├── backend/
-│   ├── main.py          # FastAPI 主入口（含 /api/news/search 接口）
+│   ├── main.py          # FastAPI 主入口（含 search / stream / ppt 接口）
 │   ├── config.py        # 配置文件
-│   ├── fetcher.py       # 新闻并发爬取（asyncio.gather）
-│   └── generator.py     # AI 异步内容生成（AsyncOpenAI / AsyncAnthropic）
+│   ├── fetcher.py       # 新闻并发爬取 + 智能去重
+│   └── generator.py     # AI 异步内容生成 + PPT 导出
 ├── Dockerfile           # Railway Docker 部署入口
 ├── frontend/
 │   ├── index.html       # 主页面（含搜索、设置面板、多结果标签页）
@@ -141,7 +143,7 @@ finance-streamer-mvp/
 4. 在右侧调整直播时长和写作风格
 5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
 6. 等待 AI 生成完成
-7. 通过标签页切换不同格式，复制或下载内容
+7. 通过标签页切换不同格式，复制、下载或导出 PPT
 
 ---
 
@@ -174,6 +176,23 @@ POST /api/generate/all
 ["id1", "id2"]
 ```
 
+### 流式生成（SSE）
+```
+POST /api/generate/stream
+{
+  "news_ids": ["id1", "id2"],
+  "content_type": "stream_script",  // stream_script | article | deep_dive | all
+  "duration": 30,
+  "style": "专业"
+}
+```
+
+### 生成 PPT
+```
+POST /api/generate/ppt
+["id1", "id2"]
+```
+
 ### 健康检查
 ```
 GET /health
@@ -183,16 +202,14 @@ GET /health
 
 ## 🎨 待开发功能
 
-- [ ] PPT 自动生成
 - [ ] 信息图生成
-- [ ] 历史记录保存（IndexedDB）
 - [ ] 用户系统
-- [ ] 更多新闻源（证券时报、第一财经）
-- [ ] 流式输出（Server-Sent Events）
+- [ ] 历史记录持久化升级（IndexedDB / 服务端同步）
+- [ ] 更多新闻源（证券时报、界面新闻等扩展源）
+- [ ] 更精细的流式输出（逐 token / 可中断恢复）
 
 ---
 
 ## 📄 License
 
 MIT
-

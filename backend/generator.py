@@ -5,8 +5,9 @@ AI内容生成模块
 """
 import logging
 import re
+import io
 from datetime import datetime
-from typing import List, Dict
+from typing import AsyncIterator, Dict, List
 
 from backend.config import AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL
 
@@ -41,33 +42,37 @@ class ContentGenerator:
             f"base_url={self.api_base or 'default'}"
         )
 
-    async def generate_stream_script(
+    def _system_prompt(self) -> str:
+        return (
+            "你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。"
+            "你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。"
+            "你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。"
+        )
+
+    def _build_stream_script_prompt(
         self,
         news_items: List[Dict],
         duration: int = 30,
-        style: str = "专业"
+        style: str = "专业",
     ) -> str:
-        """生成直播稿（目标1500-2000字）"""
-        # 构建新闻详情
+        """生成直播稿 prompt，供普通生成和流式生成复用。"""
         news_details = "\n".join([
             f"{i+1}. 【{n.get('category', '财经')}】{n['title']}\n   来源：{n['source']}"
             for i, n in enumerate(news_items)
         ])
 
-        # 计算每条新闻的时间
         time_per_news = max(3, duration // len(news_items))
-
-        # 获取当日信息
         date_str = datetime.now().strftime("%Y年%m月%d日 %A")
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][datetime.now().weekday()]
 
-        prompt = f"""你是一位拥有10年经验的资深财经主播，正在为今晚的直播准备稿件。请根据以下新闻生成一份专业、生动、有深度的直播脚本。
+        return f"""你是一位拥有10年经验的资深财经主播，正在为今晚的直播准备稿件。请根据以下新闻生成一份专业、生动、有深度的直播脚本。
 
 【今日要闻】共{len(news_items)}条
 {news_details}
 
 【直播时长】约 {duration} 分钟
 【每条新闻分配时间】约 {time_per_news} 分钟
+【整体风格】{style}
 
 【脚本要求】
 1. **开场白**（150-200字）：
@@ -121,12 +126,144 @@ class ContentGenerator:
 ---
 """
 
+    async def generate_stream_script(
+        self,
+        news_items: List[Dict],
+        duration: int = 30,
+        style: str = "专业"
+    ) -> str:
+        """生成直播稿（目标1500-2000字）"""
+        prompt = self._build_stream_script_prompt(news_items, duration=duration, style=style)
+
         try:
             response = await self._call_ai(prompt, max_tokens=4000)
             return self._format_stream_script(response, news_items)
         except Exception as e:
             logger.error("Generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_script(news_items)
+
+    async def stream_stream_script(
+        self,
+        news_items: List[Dict],
+        duration: int = 30,
+        style: str = "专业",
+    ) -> AsyncIterator[str]:
+        """流式生成直播稿文本片段。"""
+        prompt = self._build_stream_script_prompt(news_items, duration=duration, style=style)
+
+        try:
+            async for chunk in self._stream_ai(prompt, max_tokens=4000):
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            logger.error("Streaming generation error: %s | %s", e, self._error_context())
+            fallback = self._generate_fallback_script(news_items)
+            for chunk in self._chunk_text(fallback, chunk_size=160):
+                yield chunk
+
+    async def generate_ppt(
+        self,
+        news_items: List[Dict],
+        title: str = "",
+        style: str = "专业",
+    ) -> bytes:
+        """生成 PowerPoint 演示文稿并返回 PPTX 二进制。"""
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        from pptx.util import Emu, Inches, Pt
+
+        _ = style  # 为后续模板风格扩展预留
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        blue = RGBColor(0x1A, 0x56, 0xDB)
+        dark = RGBColor(0x1F, 0x2A, 0x3C)
+        white = RGBColor(0xFF, 0xFF, 0xFF)
+        gray = RGBColor(0x6B, 0x72, 0x80)
+        rectangle = 1
+
+        def add_bg(slide, color):
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = color
+
+        def add_textbox(slide, text, left, top, width, height, font_size=18, bold=False, color=None, align=PP_ALIGN.LEFT, wrap=True):
+            tx_box = slide.shapes.add_textbox(left, top, width, height)
+            tf = tx_box.text_frame
+            tf.word_wrap = wrap
+            paragraph = tf.paragraphs[0]
+            paragraph.alignment = align
+            run = paragraph.add_run()
+            run.text = text
+            run.font.size = Pt(font_size)
+            run.font.bold = bold
+            if color:
+                run.font.color.rgb = color
+            return tx_box
+
+        layout = prs.slide_layouts[6]
+        date_str = datetime.now().strftime("%Y年%m月%d日")
+
+        slide = prs.slides.add_slide(layout)
+        add_bg(slide, dark)
+        cover_title = title or f"财经日报 · {date_str}"
+        add_textbox(slide, cover_title, Inches(1), Inches(2.2), Inches(11.3), Inches(1.5), font_size=40, bold=True, color=white, align=PP_ALIGN.CENTER)
+        add_textbox(slide, f"共 {len(news_items)} 条精选财经资讯  |  {date_str}", Inches(1), Inches(3.9), Inches(11.3), Inches(0.6), font_size=18, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER)
+
+        slide = prs.slides.add_slide(layout)
+        add_bg(slide, white)
+        add_textbox(slide, "📋 目录", Inches(0.8), Inches(0.3), Inches(11), Inches(0.8), font_size=28, bold=True, color=blue)
+        line = slide.shapes.add_shape(rectangle, Inches(0.8), Inches(1.2), Inches(11.7), Emu(30000))
+        line.fill.solid()
+        line.fill.fore_color.rgb = blue
+        line.line.fill.background()
+
+        rows_per_col = 5
+        for idx, news in enumerate(news_items[:10]):
+            col = idx // rows_per_col
+            row = idx % rows_per_col
+            left = Inches(0.8) + col * Inches(6.3)
+            top = Inches(1.5) + row * Inches(0.9)
+            snippet = f"{idx + 1}. {news['title'][:36]}{'…' if len(news['title']) > 36 else ''}"
+            add_textbox(slide, snippet, left, top, Inches(5.9), Inches(0.8), font_size=13, color=dark)
+
+        for idx, news in enumerate(news_items):
+            slide = prs.slides.add_slide(layout)
+            add_bg(slide, white)
+
+            bar = slide.shapes.add_shape(rectangle, Inches(0), Inches(0), Inches(0.3), Inches(7.5))
+            bar.fill.solid()
+            bar.fill.fore_color.rgb = blue
+            bar.line.fill.background()
+
+            badge = f" {idx + 1} / {len(news_items)} · {news.get('category', '财经')} "
+            add_textbox(slide, badge, Inches(0.5), Inches(0.2), Inches(5), Inches(0.5), font_size=11, color=blue, bold=True)
+            add_textbox(slide, news["title"], Inches(0.5), Inches(0.8), Inches(12.2), Inches(1.6), font_size=24, bold=True, color=dark)
+            meta = f"来源：{news['source']}    时间：{news.get('time', '')}"
+            add_textbox(slide, meta, Inches(0.5), Inches(2.5), Inches(10), Inches(0.5), font_size=12, color=gray)
+            add_textbox(slide, "💡 核心要点", Inches(0.5), Inches(3.1), Inches(3), Inches(0.45), font_size=13, bold=True, color=blue)
+
+            bullet_top = Inches(3.6)
+            for bullet in ["• 事件核心内容待解读", "• 市场影响分析待补充", "• 投资者关注点待梳理"]:
+                add_textbox(slide, bullet, Inches(0.8), bullet_top, Inches(11.5), Inches(0.5), font_size=13, color=dark)
+                bullet_top += Inches(0.55)
+
+        slide = prs.slides.add_slide(layout)
+        add_bg(slide, dark)
+        add_textbox(slide, "📊 今日总结", Inches(1), Inches(1.5), Inches(11), Inches(1), font_size=36, bold=True, color=white, align=PP_ALIGN.CENTER)
+        categories_seen = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
+        summary = (
+            f"本次共收录 {len(news_items)} 条精选财经资讯\n"
+            f"涵盖领域：{' · '.join(categories_seen)}\n"
+            f"生成时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}"
+        )
+        add_textbox(slide, summary, Inches(1.5), Inches(3), Inches(10.3), Inches(2), font_size=16, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER)
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
 
     async def generate_article(
         self,
@@ -346,7 +483,7 @@ class ContentGenerator:
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=0.8,
-                system="你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。",
+                system=self._system_prompt(),
                 messages=[
                     {"role": "user", "content": prompt}
                 ]
@@ -357,7 +494,7 @@ class ContentGenerator:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。"},
+                    {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=max_tokens,
@@ -365,6 +502,37 @@ class ContentGenerator:
             )
             content = response.choices[0].message.content
             return content if content else ""
+
+    async def _stream_ai(self, prompt: str, max_tokens: int = 2000) -> AsyncIterator[str]:
+        """调用支持流式输出的 AI 接口。"""
+        if not self.api_key:
+            raise RuntimeError(f"缺少 {self.provider} 的 API Key")
+
+        if self.provider == "anthropic":
+            full_text = await self._call_ai(prompt, max_tokens=max_tokens)
+            for chunk in self._chunk_text(full_text):
+                yield chunk
+            return
+
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self._system_prompt()},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.8,
+            stream=True,
+        )
+        async for part in stream:
+            delta = ""
+            if part.choices:
+                delta = part.choices[0].delta.content or ""
+            if delta:
+                yield delta
+
+    def _chunk_text(self, text: str, chunk_size: int = 120) -> List[str]:
+        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
     def _format_stream_script(self, content: str, news_items: List[Dict]) -> str:
         """格式化直播稿"""

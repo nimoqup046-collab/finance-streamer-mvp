@@ -825,6 +825,16 @@ body {
     background: #fef3c7;
 }
 
+.gen-ppt {
+    border-color: #f9a8d4;
+    background: #fff1f2;
+}
+
+.gen-ppt:hover:not(:disabled) {
+    border-color: #ec4899;
+    background: #ffe4e6;
+}
+
 /* ==================== 进度步骤 ==================== */
 .progress-state {
     padding: 20px;
@@ -921,6 +931,35 @@ body {
     padding-top: 4px;
     border-top: 1px solid var(--border);
     margin-top: 4px;
+}
+
+.stream-preview {
+    margin-top: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: white;
+    overflow: hidden;
+}
+
+.stream-preview-header {
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-light);
+    border-bottom: 1px solid var(--border);
+}
+
+.stream-preview-content {
+    margin: 0;
+    padding: 14px;
+    max-height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-main);
 }
 
 /* ==================== 结果Tab ==================== */
