@@ -55,11 +55,12 @@ class NewsItem(BaseModel):
 # 内存存储（MVP版本够用）
 news_cache: List[dict] = []
 cache_time: datetime = None
+fallback_used_last_fetch: bool = False
 
 
 async def refresh_news_cache(force: bool = False) -> List[dict]:
     """在生成前兜底刷新缓存，避免多实例下缓存丢失"""
-    global news_cache, cache_time
+    global news_cache, cache_time, fallback_used_last_fetch
 
     if not force and news_cache and cache_time:
         cache_age = (datetime.now() - cache_time).total_seconds()
@@ -81,6 +82,7 @@ async def refresh_news_cache(force: bool = False) -> List[dict]:
 
     news_cache = news_list
     cache_time = datetime.now()
+    fallback_used_last_fetch = fallback_used
     return news_cache
 
 # 健康检查
@@ -97,7 +99,7 @@ async def health_check():
 @app.get("/api/news")
 async def get_news(refresh: bool = False):
     """获取今日财经新闻"""
-    global news_cache, cache_time
+    global news_cache, cache_time, fallback_used_last_fetch
 
     # 检查缓存
     if not refresh and news_cache and cache_time:
@@ -112,8 +114,8 @@ async def get_news(refresh: bool = False):
 
     # 获取新新闻
     try:
-        news_list = await refresh_news_cache(force=True)
-        fallback_used = bool(news_list) and news_list[0]["id"].startswith("mock_")
+        await refresh_news_cache(force=True)
+        fallback_used = fallback_used_last_fetch
 
         return {
             "data": news_cache,
