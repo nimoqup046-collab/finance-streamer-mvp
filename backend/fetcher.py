@@ -3,6 +3,7 @@
 参考 https://github.com/cxyo/xw 项目
 """
 import asyncio
+import difflib
 import hashlib
 import aiohttp
 import json
@@ -37,7 +38,14 @@ NEWS_SOURCES = {
         "list_selector": ".telegraph-item",
         "title_selector": "h3",
         "link_selector": "a",
-    }
+    },
+    "yicai": {
+        "name": "第一财经",
+        "url": "https://www.yicai.com/news/",
+        "list_selector": ".m-newslist li",
+        "title_selector": "h2 a, .title a",
+        "link_selector": "a",
+    },
 }
 
 
@@ -109,6 +117,31 @@ class NewsFetcher:
                         "url": title_elem.get("href", ""),
                         "time": datetime.now().strftime("%H:%M")
                     })
+
+        return news_list
+
+    def parse_yicai(self, html: str) -> List[Dict]:
+        """解析第一财经新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+
+        # 第一财经新闻列表
+        for item in soup.select(".m-newslist li, .f-list li, article")[:25]:
+            title_elem = item.select_one("h2 a, h3 a, .title a, a[href*='/news/']")
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                href = title_elem.get("href", "")
+                if len(title) > 10:
+                    if href.startswith("/"):
+                        href = f"https://www.yicai.com{href}"
+                    news_list.append({
+                        "title": title,
+                        "source": "第一财经",
+                        "url": href,
+                        "time": datetime.now().strftime("%H:%M")
+                    })
+                    if len(news_list) >= 20:
+                        break
 
         return news_list
 
@@ -220,6 +253,7 @@ class NewsFetcher:
                 self._fetch_source(session, "cls"),
                 self._fetch_source(session, "eastmoney"),
                 self._fetch_source(session, "sina"),
+                self._fetch_source(session, "yicai"),
                 return_exceptions=True,
             )
             for r in results:
@@ -231,14 +265,8 @@ class NewsFetcher:
         if not all_news:
             raise RuntimeError("所有新闻源均未返回有效内容")
 
-        # 去重（按标题前20字符）
-        seen_titles: set = set()
-        unique_news = []
-        for news in all_news:
-            title_key = news["title"][:20]
-            if title_key not in seen_titles:
-                seen_titles.add(title_key)
-                unique_news.append(news)
+        # 去重（使用标题相似度，比单纯截断前N字符更可靠）
+        unique_news = self._deduplicate_news(all_news)
 
         # 添加分类标签和稳定 ID
         for news in unique_news:
@@ -249,6 +277,55 @@ class NewsFetcher:
             news["id"] = f"{news['source']}_{stable_hash}"
 
         return unique_news[:50]  # 返回最新50条
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        """标准化标题：去除空白、标点，转小写，便于相似度比较"""
+        return re.sub(r'[\s\W]', '', title).lower()
+
+    def _deduplicate_news(self, news_list: List[Dict]) -> List[Dict]:
+        """
+        基于标题相似度去重，优于简单截断前N字符的方式。
+        两条标题满足以下任一条件则视为重复：
+        1. 标准化后完全一致；
+        2. 较短标题是较长标题的子串（包含关系，最短8字符以避免过短标题误判）；
+        3. SequenceMatcher 相似度 >= 0.75（经验阈值，平衡去重精度与召回率）。
+        """
+        # 包含关系判断的最短标题长度，避免过短标题引起误判
+        MIN_SUBSTRING_LENGTH = 8
+        # 相似度阈值：0.75 在财经新闻场景下能有效识别同源重复，同时不过度合并
+        SIMILARITY_THRESHOLD = 0.75
+
+        unique_news: List[Dict] = []
+        seen_normalized: List[str] = []
+
+        for news in news_list:
+            norm = self._normalize_title(news["title"])
+            if not norm:
+                continue
+
+            is_dup = False
+            for seen in seen_normalized:
+                # 完全一致
+                if norm == seen:
+                    is_dup = True
+                    break
+                # 包含关系（短标题是长标题子串）
+                shorter, longer = (norm, seen) if len(norm) <= len(seen) else (seen, norm)
+                if len(shorter) >= MIN_SUBSTRING_LENGTH and shorter in longer:
+                    is_dup = True
+                    break
+                # 相似度
+                ratio = difflib.SequenceMatcher(None, norm, seen).ratio()
+                if ratio >= SIMILARITY_THRESHOLD:
+                    is_dup = True
+                    break
+
+            if not is_dup:
+                unique_news.append(news)
+                seen_normalized.append(norm)
+
+        return unique_news
 
     def _categorize_news(self, title: str) -> str:
         """根据标题给新闻分类"""

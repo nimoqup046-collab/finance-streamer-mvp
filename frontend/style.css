@@ -668,6 +668,100 @@ body {
     margin-top: 6px;
 }
 
+/* PPT 生成按钮 */
+.gen-ppt {
+    grid-column: 1 / -1;
+    border-color: #f97316;
+    background: #fff7ed;
+}
+.gen-ppt:hover:not(:disabled) {
+    background: #ffedd5;
+    border-color: #ea580c;
+}
+
+/* 历史记录角标 */
+.history-badge {
+    display: inline-block;
+    background: var(--primary);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 10px;
+    padding: 0 6px;
+    margin-left: 4px;
+    vertical-align: middle;
+    line-height: 1.6;
+}
+
+/* 宽模态框（历史记录） */
+.modal-wide {
+    width: 560px;
+    max-width: 95vw;
+}
+
+/* 历史记录列表 */
+.history-list {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+.history-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    transition: background 0.15s;
+}
+
+.history-item:hover {
+    background: var(--bg-light);
+}
+
+.history-meta {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-light);
+    margin-bottom: 6px;
+}
+
+.history-type {
+    background: #dbeafe;
+    color: #1e40af;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.history-preview {
+    font-size: 13px;
+    color: var(--text-main);
+    line-height: 1.5;
+    margin-bottom: 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.history-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.btn-danger {
+    color: #ef4444;
+    border-color: #fecaca;
+}
+
+.btn-danger:hover {
+    background: #fef2f2;
+}
+
+@media (max-width: 768px) {
     .main .container {
         grid-template-columns: 1fr;
     }

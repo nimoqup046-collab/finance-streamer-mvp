@@ -41,6 +41,178 @@ class ContentGenerator:
             f"base_url={self.api_base or 'default'}"
         )
 
+    async def generate_ppt(
+        self,
+        news_items: List[Dict],
+        title: str = "",
+        style: str = "专业"
+    ) -> bytes:
+        """生成 PowerPoint 演示文稿，返回 PPTX 二进制内容"""
+        from pptx import Presentation
+        from pptx.util import Inches, Pt, Emu
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+        date_str = datetime.now().strftime("%Y年%m月%d日")
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        # 主题色
+        BLUE = RGBColor(0x1A, 0x56, 0xDB)
+        DARK = RGBColor(0x1F, 0x2A, 0x3C)
+        WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+        GRAY = RGBColor(0x6B, 0x72, 0x80)
+
+        # python-pptx add_shape requires the MSO_AUTO_SHAPE_TYPE integer value;
+        # RECTANGLE = 1
+        RECTANGLE = 1
+
+        def _add_bg(slide, color: RGBColor):
+            """为幻灯片添加纯色背景"""
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = color
+
+        def _add_textbox(slide, text: str, left, top, width, height,
+                         font_size=18, bold=False, color=None, align=PP_ALIGN.LEFT,
+                         wrap=True):
+            txBox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txBox.text_frame
+            tf.word_wrap = wrap
+            p = tf.paragraphs[0]
+            p.alignment = align
+            run = p.add_run()
+            run.text = text
+            run.font.size = Pt(font_size)
+            run.font.bold = bold
+            if color:
+                run.font.color.rgb = color
+            return txBox
+
+        layout = prs.slide_layouts[6]  # blank layout
+
+        # ── 封面页 ───────────────────────────────────────────────
+        slide = prs.slides.add_slide(layout)
+        _add_bg(slide, DARK)
+
+        cover_title = title or f"财经日报 · {date_str}"
+        _add_textbox(
+            slide, cover_title,
+            Inches(1), Inches(2.2), Inches(11.3), Inches(1.5),
+            font_size=40, bold=True, color=WHITE, align=PP_ALIGN.CENTER
+        )
+        _add_textbox(
+            slide, f"共 {len(news_items)} 条精选财经资讯  |  {date_str}",
+            Inches(1), Inches(3.9), Inches(11.3), Inches(0.6),
+            font_size=18, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER
+        )
+
+        # ── 目录页 ───────────────────────────────────────────────
+        slide = prs.slides.add_slide(layout)
+        _add_bg(slide, WHITE)
+        _add_textbox(
+            slide, "📋  目录", Inches(0.8), Inches(0.3), Inches(11), Inches(0.8),
+            font_size=28, bold=True, color=BLUE
+        )
+        # 横线
+        line = slide.shapes.add_shape(
+            RECTANGLE,  # thin rectangle used as a horizontal divider
+            Inches(0.8), Inches(1.2), Inches(11.7), Emu(30000)
+        )
+        line.fill.solid()
+        line.fill.fore_color.rgb = BLUE
+        line.line.fill.background()
+
+        rows_per_col = 5
+        for idx, news in enumerate(news_items[:10]):
+            col = idx // rows_per_col
+            row = idx % rows_per_col
+            left = Inches(0.8) + col * Inches(6.3)
+            top = Inches(1.5) + row * Inches(0.9)
+            snippet = f"{idx + 1}. {news['title'][:36]}{'…' if len(news['title']) > 36 else ''}"
+            _add_textbox(
+                slide, snippet,
+                left, top, Inches(5.9), Inches(0.8),
+                font_size=13, color=DARK
+            )
+
+        # ── 每条新闻独立页 ────────────────────────────────────────
+        for idx, news in enumerate(news_items):
+            slide = prs.slides.add_slide(layout)
+            _add_bg(slide, WHITE)
+
+            # 左侧色块标记
+            bar = slide.shapes.add_shape(RECTANGLE, Inches(0), Inches(0), Inches(0.3), Inches(7.5))
+            bar.fill.solid()
+            bar.fill.fore_color.rgb = BLUE
+            bar.line.fill.background()
+
+            # 新闻编号 + 分类 badge
+            badge = f"  {idx + 1} / {len(news_items)}  ·  {news.get('category', '财经')}  "
+            _add_textbox(
+                slide, badge,
+                Inches(0.5), Inches(0.2), Inches(5), Inches(0.5),
+                font_size=11, color=BLUE, bold=True
+            )
+
+            # 标题
+            _add_textbox(
+                slide, news["title"],
+                Inches(0.5), Inches(0.8), Inches(12.2), Inches(1.6),
+                font_size=24, bold=True, color=DARK
+            )
+
+            # 来源 + 时间
+            meta = f"来源：{news['source']}    时间：{news.get('time', '')}"
+            _add_textbox(
+                slide, meta,
+                Inches(0.5), Inches(2.5), Inches(10), Inches(0.5),
+                font_size=12, color=GRAY
+            )
+
+            # 要点占位（AI 可填充，此处给出结构化提示）
+            _add_textbox(
+                slide, "💡 核心要点",
+                Inches(0.5), Inches(3.1), Inches(3), Inches(0.45),
+                font_size=13, bold=True, color=BLUE
+            )
+            bullet_top = Inches(3.6)
+            for bullet in ["• 事件核心内容待解读", "• 市场影响分析待补充", "• 投资者关注点待梳理"]:
+                _add_textbox(
+                    slide, bullet,
+                    Inches(0.8), bullet_top, Inches(11.5), Inches(0.5),
+                    font_size=13, color=DARK
+                )
+                bullet_top += Inches(0.55)
+
+        # ── 总结页 ───────────────────────────────────────────────
+        slide = prs.slides.add_slide(layout)
+        _add_bg(slide, DARK)
+        _add_textbox(
+            slide, "📊  今日总结",
+            Inches(1), Inches(1.5), Inches(11), Inches(1),
+            font_size=36, bold=True, color=WHITE, align=PP_ALIGN.CENTER
+        )
+        categories_seen = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
+        summary = (
+            f"本次共收录 {len(news_items)} 条精选财经资讯\n"
+            f"涵盖领域：{' · '.join(categories_seen)}\n"
+            f"生成时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}"
+        )
+        _add_textbox(
+            slide, summary,
+            Inches(1.5), Inches(3), Inches(10.3), Inches(2),
+            font_size=16, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER
+        )
+
+        # 序列化为 bytes
+        import io
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
     async def generate_stream_script(
         self,
         news_items: List[Dict],

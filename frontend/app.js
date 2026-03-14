@@ -17,6 +17,24 @@ function loadSettings() {
     return { duration: 30, style: '专业', apiKey: '' };
 }
 
+// 历史记录工具函数
+const HISTORY_KEY = 'finance_streamer_history';
+const HISTORY_MAX = 20;
+
+function loadHistory() {
+    try {
+        const saved = localStorage.getItem(HISTORY_KEY);
+        if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return [];
+}
+
+function saveHistory(historyList) {
+    try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(historyList.slice(0, HISTORY_MAX)));
+    } catch (_) {}
+}
+
 createApp({
     data() {
         return {
@@ -33,6 +51,7 @@ createApp({
             loading: false,
             generating: false,
             generatingAll: false,
+            generatingPpt: false,
 
             // 生成结果
             result: null,
@@ -43,6 +62,10 @@ createApp({
             // 设置
             settings: loadSettings(),
             showSettings: false,
+
+            // 历史记录
+            history: loadHistory(),
+            showHistory: false,
 
             // 提示
             showToast: false,
@@ -246,6 +269,7 @@ createApp({
                 if (data.content !== undefined || data.titles) {
                     this.result = type === 'article' ? data : data.content;
                     this.showToastMessage(`生成成功！(${this.currentWordCount} 字)`);
+                    this._addToHistory(type, this.resultContent);
                 } else {
                     throw new Error('生成失败，返回数据为空');
                 }
@@ -286,6 +310,14 @@ createApp({
                 this.allResults = data;
                 this.activeTab = 'stream_script';
 
+                // 将三种内容分别存入历史
+                const types = ['stream_script', 'article', 'deep_dive'];
+                types.forEach(t => {
+                    const r = data[t];
+                    const content = (t === 'article' && r && r.content) ? r.content : (typeof r === 'string' ? r : '');
+                    if (content) this._addToHistory(t, content);
+                });
+
                 this.showToastMessage('全部生成完成！');
             } catch (error) {
                 console.error('生成失败:', error);
@@ -293,6 +325,54 @@ createApp({
             } finally {
                 this.generating = false;
                 this.generatingAll = false;
+            }
+        },
+
+        // 生成并下载 PPT
+        async generatePpt() {
+            if (this.selectedCount === 0) {
+                this.showToastMessage('请先选择新闻');
+                return;
+            }
+
+            this.generatingPpt = true;
+            try {
+                const response = await fetch(`${API_BASE}/api/generate/ppt`, {
+                    method: 'POST',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify(this.selectedNews)
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                // 从 Content-Disposition 头提取文件名（如有），否则用默认名
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+                let filename = `财经日报_${this.getDateTimeString()}.pptx`;
+                if (match) {
+                    // 去除引号，sanitize 路径分隔符，防止路径遍历
+                    const raw = decodeURIComponent(match[1]).replace(/['"]/g, '').trim();
+                    filename = raw.replace(/[/\\:*?"<>|]/g, '_');
+                }
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                this.showToastMessage('PPT 已生成并下载！');
+            } catch (error) {
+                console.error('PPT生成失败:', error);
+                this.showToastMessage(`PPT生成失败：${error.message}`);
+            } finally {
+                this.generatingPpt = false;
             }
         },
 
@@ -348,6 +428,49 @@ createApp({
             } catch (_) {}
             this.showSettings = false;
             this.showToastMessage('设置已保存');
+        },
+
+        // ── 历史记录 ──────────────────────────────────────────────
+
+        _typeLabel(type) {
+            return { stream_script: '直播稿', article: '公众号', deep_dive: '深度长文' }[type] || type;
+        },
+
+        _addToHistory(type, content) {
+            if (!content || !content.trim()) return;
+            const entry = {
+                id: Date.now(),
+                type,
+                typeLabel: this._typeLabel(type),
+                preview: content.replace(/\s+/g, ' ').trim().slice(0, 60),
+                content,
+                wordCount: content.replace(/\s/g, '').length,
+                savedAt: new Date().toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            };
+            this.history.unshift(entry);
+            if (this.history.length > HISTORY_MAX) this.history = this.history.slice(0, HISTORY_MAX);
+            saveHistory(this.history);
+        },
+
+        restoreHistory(entry) {
+            this.allResults = null;
+            this.resultType = entry.type;
+            this.result = entry.type === 'article'
+                ? { content: entry.content, titles: [], html: '' }
+                : entry.content;
+            this.showHistory = false;
+            this.showToastMessage(`已恢复：${entry.typeLabel}`);
+        },
+
+        deleteHistory(id) {
+            this.history = this.history.filter(h => h.id !== id);
+            saveHistory(this.history);
+        },
+
+        clearHistory() {
+            this.history = [];
+            saveHistory([]);
+            this.showToastMessage('历史记录已清空');
         },
 
         // 获取时间字符串

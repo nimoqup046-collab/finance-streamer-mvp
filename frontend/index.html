@@ -15,6 +15,9 @@
                 <h1 class="logo">📊 财经主播助手</h1>
                 <div class="header-info">
                     <span class="time">{{ currentTime }}</span>
+                    <button @click="showHistory = true" class="btn-icon" :disabled="history.length === 0" title="历史记录">
+                        🕘 历史<span v-if="history.length > 0" class="history-badge">{{ history.length }}</span>
+                    </button>
                     <button @click="refreshNews" class="btn-icon" :disabled="loading">
                         🔄 刷新
                     </button>
@@ -170,6 +173,14 @@
                             <span class="icon">📦</span>
                             <span class="text">全部生成</span>
                         </button>
+                        <button
+                            @click="generatePpt"
+                            :disabled="selectedCount === 0 || generatingPpt"
+                            class="gen-btn gen-ppt"
+                        >
+                            <span class="icon">{{ generatingPpt ? '⏳' : '📊' }}</span>
+                            <span class="text">{{ generatingPpt ? '生成中…' : 'PPT下载' }}</span>
+                        </button>
                     </div>
 
                     <!-- 生成结果 -->
@@ -221,6 +232,40 @@
                 </section>
             </div>
         </main>
+
+        <!-- 历史记录面板 -->
+        <div v-if="showHistory" class="modal-overlay" @click.self="showHistory = false">
+            <div class="modal modal-wide">
+                <div class="modal-header">
+                    <h3>🕘 历史记录 (最近 {{ history.length }} 条)</h3>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <button @click="clearHistory" class="btn-small btn-danger" v-if="history.length > 0">🗑 清空</button>
+                        <button @click="showHistory = false" class="btn-close-modal">✕</button>
+                    </div>
+                </div>
+                <div class="modal-body history-list">
+                    <div v-if="history.length === 0" class="empty-state">
+                        <p>暂无历史记录，生成内容后将自动保存</p>
+                    </div>
+                    <div
+                        v-for="entry in history"
+                        :key="entry.id"
+                        class="history-item"
+                    >
+                        <div class="history-meta">
+                            <span class="history-type">{{ entry.typeLabel }}</span>
+                            <span class="history-time">{{ entry.savedAt }}</span>
+                            <span class="history-words">{{ entry.wordCount }} 字</span>
+                        </div>
+                        <p class="history-preview">{{ entry.preview }}…</p>
+                        <div class="history-actions">
+                            <button @click="restoreHistory(entry)" class="btn-small">📂 恢复</button>
+                            <button @click="deleteHistory(entry.id)" class="btn-small btn-danger">🗑</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- 设置面板 -->
         <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">

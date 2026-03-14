@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from fastapi import FastAPI, HTTPException, Depends, Header, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -169,7 +170,7 @@ async def get_categories():
     """获取新闻分类"""
     return {
         "categories": ["宏观", "A股", "美股", "行业", "个股", "财经"],
-        "sources": ["东方财富网", "新浪财经", "财联社"]
+        "sources": ["东方财富网", "新浪财经", "财联社", "第一财经"]
     }
 
 
@@ -286,6 +287,37 @@ async def generate_all(news_ids: List[str] = Body(...)):
         logger.error("批量生成失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
+# 生成 PPT
+@app.post("/api/generate/ppt", dependencies=[Depends(verify_api_key)])
+async def generate_ppt(news_ids: List[str] = Body(...)):
+    """根据选中新闻生成 PowerPoint 演示文稿并下载"""
+    global news_cache
+
+    if not news_cache:
+        await refresh_news_cache()
+
+    selected_news = [n for n in news_cache if n["id"] in news_ids]
+
+    if not selected_news:
+        await refresh_news_cache(force=True)
+        selected_news = [n for n in news_cache if n["id"] in news_ids]
+
+    if not selected_news:
+        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+
+    try:
+        pptx_bytes = await generator.generate_ppt(selected_news)
+        filename = f"财经日报_{datetime.now().strftime('%Y%m%d_%H%M')}.pptx"
+        import io
+        return StreamingResponse(
+            io.BytesIO(pptx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={"Content-Disposition": f'attachment; filename*=UTF-8\'\'{filename}'}
+        )
+    except Exception as e:
+        logger.error("PPT生成失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="PPT生成失败，请稍后重试")
+
 # 获取系统状态
 @app.get("/api/status")
 async def get_status():
@@ -298,7 +330,7 @@ async def get_status():
             "stream_script": True,
             "article": True,
             "deep_dive": True,
-            "ppt": False,  # 待开发
+            "ppt": True,
             "infographic": False  # 待开发
         }
     }
