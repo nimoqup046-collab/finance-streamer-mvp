@@ -6,8 +6,9 @@ AI内容生成模块
 import logging
 import re
 import io
+import json
 from datetime import datetime
-from typing import AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict, List
 
 from backend.config import AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL
 
@@ -44,88 +45,203 @@ class ContentGenerator:
 
     def _system_prompt(self) -> str:
         return (
-            "你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。"
-            "你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。"
-            "你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。"
+            "你是一位顶级中文财经内容总编，同时熟悉证券研究、产业分析和大众传播。"
+            "你的任务不是把新闻改写一遍，而是把当日信息流重组为真正有洞察、有判断、有传播力的内容。"
+            "你尤其擅长："
+            "1. 从零散新闻里提炼主线，判断市场真正该关注什么；"
+            "2. 用商业分析框架解释事件背后的利益关系、因果链条和行业影响；"
+            "3. 用通俗但不浅薄的中文，把复杂财经问题讲给普通投资者听明白；"
+            "4. 保持专业克制，不胡编数据，不输出空话套话。"
+            "写作气质要求：结构化、洞察感强、语言流畅、解释清楚、有记忆点。"
+            "禁止：新闻罗列、口号式总结、没有依据的强预测、泛泛而谈的鸡汤。"
         )
+
+    def _news_snapshot(self, news_items: List[Dict]) -> str:
+        lines = []
+        for index, news in enumerate(news_items, 1):
+            lines.append(
+                f"{index}. 标题：{news['title']}\n"
+                f"   分类：{news.get('category', '财经')} | 来源：{news['source']} | 时间：{news.get('time', '')}\n"
+                f"   链接：{news.get('url') or '无'}"
+            )
+        return "\n".join(lines)
+
+    def _style_profile(self, style: str) -> str:
+        style = (style or "专业").strip()
+        profiles = {
+            "专业": (
+                "行文以专业主播口吻输出，强调关键事实、资金逻辑、产业逻辑和受益受损方。"
+                "整体气质偏商业洞察型：先讲结论，再拆原因，再落到普通投资者能理解的影响。"
+            ),
+            "轻松": (
+                "语言更口语化，但不能油腻。要把专业结论翻译成普通观众能秒懂的话，"
+                "适当加入类比、提问和提醒，依然保留逻辑深度。"
+            ),
+            "解读型": (
+                "重点强化“这条新闻到底意味着什么”，多做背景补充、因果拆解和风险提示，"
+                "减少表面播报，增加判断。"
+            ),
+            "洞察": (
+                "强调主线、反直觉判断和结构化洞察。写法要像成熟财经作者在带读者看门道，"
+                "既讲事件，也讲市场定价和预期差。"
+            ),
+        }
+        return profiles.get(style, profiles["专业"])
+
+    def _fallback_editorial_brief(self, news_items: List[Dict], goal: str) -> Dict[str, Any]:
+        categories = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
+        return {
+            "goal": goal,
+            "lead_angle": f"今日最值得抓住的主线是{categories[0] if categories else '财经'}方向的预期变化，而不是简单复述新闻。",
+            "core_conflicts": [
+                "政策预期与市场定价是否错位",
+                "短期情绪催化能否转化为中期基本面",
+                "投资者该关注主线还是防守风险",
+            ],
+            "market_pulse": [
+                "先判断事件影响的是估值、盈利还是风险偏好",
+                "区分主题交易与基本面改善，不混为一谈",
+            ],
+            "audience_takeaways": [
+                "今天最重要的不是新闻数量，而是主线和节奏",
+                "真正值得追踪的是后续验证指标，而不是单日情绪",
+            ],
+            "slide_outline": [
+                {"headline": news["title"][:28], "bullets": [f"来源：{news['source']}", f"分类：{news.get('category', '财经')}", "关注其对市场预期的边际影响"]}
+                for news in news_items[:8]
+            ],
+        }
+
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("empty json text")
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                raise
+            return json.loads(match.group(0))
+
+    async def _prepare_editorial_brief(self, news_items: List[Dict], goal: str, style: str) -> Dict[str, Any]:
+        prompt = f"""请你扮演财经内容总编，先不要直接写正文，而是基于以下新闻生成一份“编辑部策划brief”。
+
+【生成目标】
+{goal}
+
+【写作气质】
+{self._style_profile(style)}
+
+【新闻池】
+{self._news_snapshot(news_items)}
+
+请输出严格 JSON，不要 Markdown，不要解释，不要多余文本。JSON 结构如下：
+{{
+  "goal": "一句话写作目标",
+  "lead_angle": "最值得展开的总论点，必须有判断，不要空泛",
+  "core_conflicts": ["3条矛盾/预期差/市场真正该关心的问题"],
+  "market_pulse": ["3条市场脉搏判断：情绪/资金/产业/政策"],
+  "audience_takeaways": ["3条普通投资者最该带走的结论"],
+  "slide_outline": [
+    {{
+      "headline": "适合做PPT页标题的一句话",
+      "bullets": ["3-4条高信息密度 bullet，每条不超过28字"]
+    }}
+  ]
+}}
+
+要求：
+1. 所有内容必须基于给定新闻，不要凭空编数据。
+2. 观点要像成熟财经作者做选题会，不要像机器摘要。
+3. 如果素材不足，也要明确“该继续追踪什么指标/问题”。
+"""
+        try:
+            content = await self._call_ai(prompt, max_tokens=1800)
+            return self._extract_json(content)
+        except Exception as e:
+            logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
+            return self._fallback_editorial_brief(news_items, goal)
 
     def _build_stream_script_prompt(
         self,
         news_items: List[Dict],
+        editorial_brief: Dict[str, Any],
         duration: int = 30,
         style: str = "专业",
     ) -> str:
         """生成直播稿 prompt，供普通生成和流式生成复用。"""
-        news_details = "\n".join([
-            f"{i+1}. 【{n.get('category', '财经')}】{n['title']}\n   来源：{n['source']}"
-            for i, n in enumerate(news_items)
-        ])
+        news_details = self._news_snapshot(news_items)
+        core_conflicts = "\n".join([f"- {item}" for item in editorial_brief.get("core_conflicts", [])])
+        market_pulse = "\n".join([f"- {item}" for item in editorial_brief.get("market_pulse", [])])
+        takeaways = "\n".join([f"- {item}" for item in editorial_brief.get("audience_takeaways", [])])
 
         time_per_news = max(3, duration // len(news_items))
-        date_str = datetime.now().strftime("%Y年%m月%d日 %A")
-        weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][datetime.now().weekday()]
+        return f"""请写一份真正可上播的财经直播稿，而不是新闻摘要。你要像成熟财经主播在带观众抓主线、讲逻辑、给判断。
 
-        return f"""你是一位拥有10年经验的资深财经主播，正在为今晚的直播准备稿件。请根据以下新闻生成一份专业、生动、有深度的直播脚本。
+【写作目标】
+{editorial_brief.get("goal", "输出一份高质量财经直播稿")}
 
-【今日要闻】共{len(news_items)}条
+【核心总论点】
+{editorial_brief.get("lead_angle", "")}
+
+【今日要闻】共 {len(news_items)} 条
 {news_details}
 
-【直播时长】约 {duration} 分钟
-【每条新闻分配时间】约 {time_per_news} 分钟
-【整体风格】{style}
+【你必须抓住的矛盾/预期差】
+{core_conflicts or '- 没有额外补充'}
+
+【你必须融入的市场脉搏判断】
+{market_pulse or '- 没有额外补充'}
+
+【观众最终要带走的结论】
+{takeaways or '- 没有额外补充'}
+
+【直播约束】
+- 总时长：约 {duration} 分钟
+- 每条新闻：约 {time_per_news} 分钟
+- 风格：{style}
+- 写作气质：{self._style_profile(style)}
 
 【脚本要求】
-1. **开场白**（150-200字）：
-   - 亲切自然的问候
-   - 快速进入主题，提及今日市场概况
-   - 设置悬念，引发观众继续观看的兴趣
+1. 开场必须先给“今晚最重要的一句话判断”，再带出为什么。
+2. 每条新闻不能只复述，必须包含：
+   - 事实提炼：真正发生了什么
+   - 背景原因：为什么现在发生
+   - 市场影响：影响哪类资产/行业/公司
+   - 观众视角：普通投资者该怎么理解
+3. 每条新闻都尽量给一个“别被表象带偏”的提醒。
+4. 结尾必须总结主线、风险点、明日验证指标。
 
-2. **主体内容**（每条新闻200-300字）：
-   - 用口语化方式复述新闻要点
-   - 深度分析背景、原因和影响
-   - 加入数据解读和专业知识
-   - 提供独特的观点和见解
-   - 设计一个有价值的观众互动问题
+【质量底线】
+- 不要说空话，例如“值得持续关注”“影响深远”而不解释。
+- 不要写成公文或研报黑话堆砌。
+- 不要编造具体数字、机构观点或未给出的公司数据。
+- 要有镜头感、主播感，但依然专业。
 
-3. **结尾总结**（150-200字）：
-   - 概括今日最重要的3个要点
-   - 给出明日市场的2-3个关注点
-   - 感谢语和下次预告
-
-【风格要求】
-- 像真人说话，适当加入语气词
-- 专业但不晦涩，深入但不枯燥
-- 有个人观点，不是单纯播报
-- 让观众有收获感和共鸣感
-
-【字数要求】
-- 总字数不少于1500字
-- 开场白不少于150字
-- 每条新闻解读不少于200字
-- 结尾不少于150字
-
-请直接输出完整的直播脚本，不要有多余的说明：
-
----
-【开场白】
-（150-200字的开场内容）
-
-【新闻1】{news_items[0]['title'][:30]}...
-（250-300字：复述+深度解读+互动提问）
-
-【新闻2】...
+【输出格式】
+【开场判断】
 ...
 
-【今日总结】
-（150-200字总结）
+【主线一：...】
+...
+
+【主线二：...】
+...
+
+【逐条展开】
+【新闻1】...
+【新闻2】...
+
+【收尾总结】
+...
 
 【明日关注】
-• 关注点1
-• 关注点2
-• 关注点3
----
+- ...
+- ...
+- ...
 """
-
     async def generate_stream_script(
         self,
         news_items: List[Dict],
@@ -133,7 +249,17 @@ class ContentGenerator:
         style: str = "专业"
     ) -> str:
         """生成直播稿（目标1500-2000字）"""
-        prompt = self._build_stream_script_prompt(news_items, duration=duration, style=style)
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
+            style=style,
+        )
+        prompt = self._build_stream_script_prompt(
+            news_items,
+            editorial_brief=editorial_brief,
+            duration=duration,
+            style=style,
+        )
 
         try:
             response = await self._call_ai(prompt, max_tokens=4000)
@@ -149,7 +275,17 @@ class ContentGenerator:
         style: str = "专业",
     ) -> AsyncIterator[str]:
         """流式生成直播稿文本片段。"""
-        prompt = self._build_stream_script_prompt(news_items, duration=duration, style=style)
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
+            style=style,
+        )
+        prompt = self._build_stream_script_prompt(
+            news_items,
+            editorial_brief=editorial_brief,
+            duration=duration,
+            style=style,
+        )
 
         try:
             async for chunk in self._stream_ai(prompt, max_tokens=4000):
@@ -173,7 +309,11 @@ class ContentGenerator:
         from pptx.enum.text import PP_ALIGN
         from pptx.util import Emu, Inches, Pt
 
-        _ = style  # 为后续模板风格扩展预留
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合晨会/直播前准备的财经简报PPT大纲",
+            style=style,
+        )
         prs = Presentation()
         prs.slide_width = Inches(13.33)
         prs.slide_height = Inches(7.5)
@@ -210,7 +350,17 @@ class ContentGenerator:
         add_bg(slide, dark)
         cover_title = title or f"财经日报 · {date_str}"
         add_textbox(slide, cover_title, Inches(1), Inches(2.2), Inches(11.3), Inches(1.5), font_size=40, bold=True, color=white, align=PP_ALIGN.CENTER)
-        add_textbox(slide, f"共 {len(news_items)} 条精选财经资讯  |  {date_str}", Inches(1), Inches(3.9), Inches(11.3), Inches(0.6), font_size=18, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER)
+        add_textbox(
+            slide,
+            f"{editorial_brief.get('lead_angle', f'共 {len(news_items)} 条精选财经资讯')}  |  {date_str}",
+            Inches(1),
+            Inches(3.9),
+            Inches(11.3),
+            Inches(0.8),
+            font_size=18,
+            color=RGBColor(0xA0, 0xAE, 0xC0),
+            align=PP_ALIGN.CENTER,
+        )
 
         slide = prs.slides.add_slide(layout)
         add_bg(slide, white)
@@ -220,6 +370,7 @@ class ContentGenerator:
         line.fill.fore_color.rgb = blue
         line.line.fill.background()
 
+        slide_outline = editorial_brief.get("slide_outline", [])
         rows_per_col = 5
         for idx, news in enumerate(news_items[:10]):
             col = idx // rows_per_col
@@ -245,8 +396,14 @@ class ContentGenerator:
             add_textbox(slide, meta, Inches(0.5), Inches(2.5), Inches(10), Inches(0.5), font_size=12, color=gray)
             add_textbox(slide, "💡 核心要点", Inches(0.5), Inches(3.1), Inches(3), Inches(0.45), font_size=13, bold=True, color=blue)
 
+            outline = slide_outline[idx] if idx < len(slide_outline) else {}
+            bullets = outline.get("bullets") or [
+                f"事件性质：{news.get('category', '财经')}方向的新变化",
+                f"市场含义：关注{news['source']}后续是否带来预期修正",
+                "跟踪指标：政策、订单、价格、成交量与资金流",
+            ]
             bullet_top = Inches(3.6)
-            for bullet in ["• 事件核心内容待解读", "• 市场影响分析待补充", "• 投资者关注点待梳理"]:
+            for bullet in bullets[:4]:
                 add_textbox(slide, bullet, Inches(0.8), bullet_top, Inches(11.5), Inches(0.5), font_size=13, color=dark)
                 bullet_top += Inches(0.55)
 
@@ -255,8 +412,10 @@ class ContentGenerator:
         add_textbox(slide, "📊 今日总结", Inches(1), Inches(1.5), Inches(11), Inches(1), font_size=36, bold=True, color=white, align=PP_ALIGN.CENTER)
         categories_seen = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
         summary = (
+            f"{editorial_brief.get('lead_angle', '今天最值得关注的是市场主线变化')}\n\n"
             f"本次共收录 {len(news_items)} 条精选财经资讯\n"
             f"涵盖领域：{' · '.join(categories_seen)}\n"
+            f"重点带走：{'；'.join(editorial_brief.get('audience_takeaways', [])[:3])}\n"
             f"生成时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}"
         )
         add_textbox(slide, summary, Inches(1.5), Inches(3), Inches(10.3), Inches(2), font_size=16, color=RGBColor(0xA0, 0xAE, 0xC0), align=PP_ALIGN.CENTER)
@@ -271,56 +430,44 @@ class ContentGenerator:
         title: str = ""
     ) -> Dict:
         """生成公众号文章（目标1500-2000字）"""
-        # 构建新闻详情
-        news_details = "\n".join([
-            f"• {n['title']}（{n['source']}）"
-            for n in news_items
-        ])
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="写一篇能发在公众号上的高质量财经文章，不止要讲发生了什么，更要讲为什么重要",
+            style="洞察" if title else "解读型",
+        )
+        prompt = f"""请写一篇成熟财经公众号作者级别的长文。注意：不是把新闻拼接起来，而是围绕一个总论点把当天信息重新组织。
 
-        # 获取当日日期
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-        weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][datetime.now().weekday()]
+【总论点】
+{editorial_brief.get("lead_angle", "")}
 
-        prompt = f"""你是一位优秀的财经自媒体作者，擅长写深入浅出、观点犀利的财经文章。请根据以下新闻素材，撰写一篇高质量的微信公众号文章。
+【必须回答的关键问题】
+{chr(10).join(f"- {item}" for item in editorial_brief.get("core_conflicts", []))}
 
-【新闻素材】共{len(news_items)}条
-{news_details}
+【普通读者最该带走的结论】
+{chr(10).join(f"- {item}" for item in editorial_brief.get("audience_takeaways", []))}
 
-【文章要求】
+【新闻池】
+{self._news_snapshot(news_items)}
 
-**1. 标题（3个选项）**
-- 标题1：数字+冲击力，如"降准了！央行突发重磅，释放5000亿资金"
-- 标题2：提问式，如"今天发生了什么？这3条消息关乎你的钱包"
-- 标题3：总结式，如"财经日报：政策利好频出，A股迎来新机遇"
+【写作要求】
+1. 标题必须给 3 个备选，像成熟财经大号标题，而不是标题党。
+2. 导语第一段就要回答“今天最该关注什么变化”。
+3. 正文按“结论 -> 背景 -> 影响 -> 机会/风险”来展开。
+4. 语言要通俗，但不能失去专业判断；要解释专业概念，不要堆黑话。
+5. 每个小节都要告诉读者：这件事影响谁、影响多久、后续看什么指标。
+6. 可以有判断，但不要编造数据、引述或内幕。
+7. 允许适当使用短句和反问，增强阅读感。
 
-**2. 导语（200字）**
-- 快速抓住读者注意力
-- 提炼今日最重要的变化
-- 说明为什么值得关注
-- 引发继续阅读的兴趣
+【气质要求】
+{self._style_profile("洞察")}
 
-**3. 正文结构**（每条新闻300-400字）
-- 每条新闻作为独立小节
-- 用吸引人的小标题
-- 先说事实，再深入分析
-- 加入专业观点和数据
-- 说明对投资者的影响
-- 语言通俗易懂
-
-**4. 总结升华（200字）**
-- 总结今日市场脉络
-- 给投资者一条建议
-- 引导关注
-
-**5. 字数要求**
-- 总字数不少于1500字
-- 导语不少于200字
-- 每条新闻不少于300字
-- 结尾不少于150字
+【篇幅要求】
+- 总字数 2200-3200 字
+- 导语 250-350 字
+- 每个主体小节 350-500 字
+- 结尾必须落到“接下来怎么看”
 
 【输出格式】
-请严格按照以下格式输出：
-
 ===标题选项===
 标题1
 标题2
@@ -330,22 +477,25 @@ class ContentGenerator:
 # 主标题
 
 **导语**
-200字导语内容...
+...
 
-## 小标题1
-300-400字正文内容...
+## 一、今天市场真正的重点是什么
+...
 
-## 小标题2
-300-400字正文内容...
+## 二、这几条新闻背后是一条什么主线
+...
 
----
+## 三、对普通投资者意味着什么
+...
 
-**总结升华**
-150-200字总结...
+## 四、接下来重点看什么
+...
+
+**结尾**
+...
 
 *本文仅供参考，不构成投资建议*
-===
-"""
+==="""
 
         try:
             response = await self._call_ai(prompt, max_tokens=4000)
@@ -363,107 +513,60 @@ class ContentGenerator:
         if not focus_topic:
             focus_topic = news_items[0]["title"]
 
-        # 构建新闻详情
-        news_details = "\n".join([
-            f"• {n['title']}（{n['source']}）"
-            for n in news_items[:6]
-        ])
-
-        prompt = f"""你是一位顶级证券分析师，拥有15年研究经验，曾在多家头部券商担任首席分析师。请针对以下财经事件，撰写一份专业的深度调研报告。
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="写一篇有研究框架、有投资视角、能帮助读者建立判断的深度长文",
+            style="洞察",
+        )
+        prompt = f"""请围绕以下核心事件，写一篇真正像“深度研判”而不是“信息汇总”的长文。
 
 【核心事件】
 {focus_topic}
 
-【相关资讯】
-{news_details}
+【总论点】
+{editorial_brief.get("lead_angle", "")}
 
-【报告结构】
-请按以下结构撰写，总字数不少于2500字：
+【你必须拆清楚的问题】
+{chr(10).join(f"- {item}" for item in editorial_brief.get("core_conflicts", []))}
 
----
-# 深度调研报告：{focus_topic[:40]}
-
-## 一、核心摘要（300字）
-- 事件核心内容精述
-- 关键数据和影响范围
-- 主要结论和投资建议
-- 报告逻辑框架
-
-## 二、事件背景（400字）
-- 事件起因和来龙去脉
-- 相关政策背景和历史沿革
-- 与历史类似事件的对比
-- 事件发生的深层原因
-
-## 三、深度分析
-### 3.1 市场影响分析（500字）
-- 对A股整体市场的影响（短期/中期/长期）
-- 对相关板块的具体影响
-- 对投资者情绪的影响
-- 市场目前的定价是否充分
-
-### 3.2 产业链分析（400字）
-- 上游产业的影响和机遇
-- 中游产业的调整方向
-- 下游产业的需求变化
-- 产业链价值重估
-
-### 3.3 机构观点汇总（400字）
-- 券商研报核心观点（至少3家）
-- 公募/私募基金经理观点
-- 外资机构看法
-- 市场共识与分歧分析
-
-## 四、投资逻辑（500字）
-### 4.1 利好因素分析
-- 政策利好
-- 行业景气度
-- 公司基本面
-- 其他催化因素
-
-### 4.2 利空因素分析
-- 潜在风险
-- 估值压力
-- 竞争格局变化
-- 其他不确定性
-
-### 4.3 风险收益评估
-- 预期收益空间
-- 最大回撤风险
-- 风险收益比
-- 适合的投资者类型
-
-## 五、投资建议（400字）
-### 5.1 短期策略（1-3个月）
-- 具体操作建议
-- 关注标的类型
-- 仓位配置建议
-- 进出场时机
-
-### 5.2 中长期策略（6-12个月）
-- 布局方向
-- 持仓周期
-- 止盈止损策略
-
-## 六、风险提示（200字）
-- 政策风险
-- 市场风险
-- 行业风险
-- 公司特有风险
-
-## 七、总结与展望（200字）
-- 未来6-12个月趋势判断
-- 关键观察指标
-- 结论性建议
-
----
+【新闻池】
+{self._news_snapshot(news_items[:10])}
 
 【写作要求】
-- 专业严谨，观点鲜明
-- 数据支撑，逻辑清晰
-- 深入浅出，避免过于学术化
-- 提供具体可操作的建议
-- 总字数不少于2500字
+1. 先给明确结论，再展开论证。
+2. 多做因果链分析：政策/行业/公司/市场预期之间如何传导。
+3. 不能虚构机构观点、财务数字、研报数据；没有数据时就明确写“当前还需观察”。
+4. 要把复杂问题解释清楚，给普通投资者也能看懂，但专业读者也觉得有框架。
+5. 必须同时写机会和风险，不能只唱多或只唱空。
+6. 结尾要给出“未来 1-4 周重点验证指标”。
+
+【篇幅】
+- 总字数 2800-4200 字
+- 每个一级章节都要有实质内容，不可空泛
+
+【输出结构】
+# 深度研判：{focus_topic[:40]}
+
+## 一、先说结论
+...
+
+## 二、事件到底改变了什么
+...
+
+## 三、市场为什么会对它敏感
+...
+
+## 四、真正的机会在哪里
+...
+
+## 五、最大的风险与误判点
+...
+
+## 六、接下来怎么跟踪验证
+...
+
+## 七、总结
+...
 """
 
         try:
@@ -482,7 +585,7 @@ class ContentGenerator:
             message = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                temperature=0.8,
+                temperature=0.65,
                 system=self._system_prompt(),
                 messages=[
                     {"role": "user", "content": prompt}
@@ -498,7 +601,7 @@ class ContentGenerator:
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=max_tokens,
-                temperature=0.8
+                temperature=0.65
             )
             content = response.choices[0].message.content
             return content if content else ""
@@ -521,7 +624,7 @@ class ContentGenerator:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=max_tokens,
-            temperature=0.8,
+            temperature=0.65,
             stream=True,
         )
         async for part in stream:

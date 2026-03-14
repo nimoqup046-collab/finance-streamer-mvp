@@ -192,7 +192,11 @@ async def health_check():
 
 # 获取新闻列表
 @app.get("/api/news")
-async def get_news(refresh: bool = False):
+async def get_news(
+    refresh: bool = False,
+    limit: int = Query(100, ge=1, le=200),
+    sort: str = Query("hot", pattern="^(hot|latest)$"),
+):
     """获取今日财经新闻"""
     global news_cache, cache_time, fallback_used_last_fetch
 
@@ -200,10 +204,17 @@ async def get_news(refresh: bool = False):
     if not refresh and news_cache and cache_time:
         cache_age = (datetime.now() - cache_time).total_seconds()
         if cache_age < NEWS_CACHE_MINUTES * 60:
+            data = list(news_cache)
+            if sort == "latest":
+                data.sort(key=lambda item: item.get("time", ""), reverse=True)
+            else:
+                data.sort(key=lambda item: item.get("hot_score", 0), reverse=True)
             return {
-                "data": news_cache,
-                "count": len(news_cache),
+                "data": data[:limit],
+                "count": len(data[:limit]),
+                "total_count": len(data),
                 "cached": True,
+                "sort": sort,
                 "update_time": cache_time.isoformat()
             }
 
@@ -212,11 +223,19 @@ async def get_news(refresh: bool = False):
         await refresh_news_cache(force=True)
         fallback_used = fallback_used_last_fetch
 
+        data = list(news_cache)
+        if sort == "latest":
+            data.sort(key=lambda item: item.get("time", ""), reverse=True)
+        else:
+            data.sort(key=lambda item: item.get("hot_score", 0), reverse=True)
+
         return {
-            "data": news_cache,
-            "count": len(news_cache),
+            "data": data[:limit],
+            "count": len(data[:limit]),
+            "total_count": len(data),
             "cached": False,
             "fallback": fallback_used,
+            "sort": sort,
             "update_time": cache_time.isoformat()
         }
     except Exception as e:
@@ -229,7 +248,7 @@ async def get_categories():
     """获取新闻分类"""
     return {
         "categories": ["宏观", "A股", "美股", "行业", "个股", "财经"],
-        "sources": ["东方财富网", "新浪财经", "财联社", "第一财经"]
+        "sources": ["东方财富网", "新浪财经", "财联社", "第一财经", "证券时报", "上海证券报"]
     }
 
 

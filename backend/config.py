@@ -14,13 +14,18 @@ def _parse_bool(value: str, default: bool = False) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "y", "on")
 
 # AI 提供商配置
-AI_PROVIDER = os.getenv("AI_PROVIDER", "doubao").lower()  # doubao / anthropic / openai
+AI_PROVIDER = os.getenv("AI_PROVIDER", "doubao").lower()  # doubao / zhipu / anthropic / openai
 
 # 豆包配置
 DOUBAO_API_KEY = os.getenv("DOUBAO_API_KEY", "")
 DOUBAO_API_BASE = os.getenv("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")
 DOUBAO_ENDPOINT_ID = os.getenv("DOUBAO_ENDPOINT_ID", "")
 DOUBAO_MODEL = os.getenv("DOUBAO_MODEL", "doubao-1-5-pro-32k-250115")
+
+# 智谱配置（推荐用于中文财经写作）
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
+ZHIPU_API_BASE = os.getenv("ZHIPU_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
+ZHIPU_MODEL = os.getenv("ZHIPU_MODEL", "glm-4.7")
 
 # Anthropic Claude 配置 (Sonnet 4.6)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -36,6 +41,10 @@ if AI_PROVIDER == "anthropic":
     AI_API_KEY = ANTHROPIC_API_KEY
     AI_API_BASE = "https://api.anthropic.com"
     AI_MODEL = ANTHROPIC_MODEL
+elif AI_PROVIDER == "zhipu":
+    AI_API_KEY = ZHIPU_API_KEY
+    AI_API_BASE = ZHIPU_API_BASE
+    AI_MODEL = ZHIPU_MODEL
 elif AI_PROVIDER == "openai":
     AI_API_KEY = OPENAI_API_KEY
     AI_API_BASE = OPENAI_API_BASE

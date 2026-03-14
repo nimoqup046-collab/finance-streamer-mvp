@@ -13,7 +13,7 @@ function loadSettings() {
         const saved = localStorage.getItem('finance_streamer_settings');
         if (saved) return JSON.parse(saved);
     } catch (_) {}
-    return { duration: 30, style: '专业', apiKey: '' };
+    return { duration: 30, style: '洞察', apiKey: '' };
 }
 
 const PROGRESS_STEPS = [
@@ -32,6 +32,8 @@ createApp({
             selectedNews: [],
             filterCategory: '全部',
             categories: ['全部', '宏观', 'A股', '美股', '行业', '个股', '财经'],
+            newsSort: 'hot',
+            newsLimit: 100,
 
             // 搜索
             searchQuery: '',
@@ -42,10 +44,10 @@ createApp({
 
             // 生成参数
             duration: settings.duration || 30,
-            style: settings.style || '专业',
+            style: settings.style || '洞察',
             apiKey: settings.apiKey || '',
             showSettings: false,
-            styleOptions: ['专业', '轻松', '解读型'],
+            styleOptions: ['洞察', '解读型', '专业', '轻松'],
             durationOptions: [15, 30, 60],
 
             // 状态
@@ -194,15 +196,18 @@ createApp({
         async fetchNews(refresh = false) {
             this.loading = true;
             try {
-                const response = await fetch(`${API_BASE}/api/news?refresh=${refresh}`);
+                const response = await fetch(
+                    `${API_BASE}/api/news?refresh=${refresh}&limit=${this.newsLimit}&sort=${this.newsSort}`
+                );
                 const data = await response.json();
                 if (data.data) {
                     this.news = data.data;
                     if (!refresh && data.cached) {
-                        this.showToastMessage(`已加载缓存数据 (${data.count}条)`, 'info');
+                        this.showToastMessage(`已加载缓存数据 (${data.count}/${data.total_count || data.count}条)`, 'info');
                     } else {
                         const fallbackNote = data.fallback ? '（模拟数据）' : '';
-                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻${fallbackNote}`, 'success');
+                        const sortLabel = this.newsSort === 'hot' ? '热点优先' : '最新优先';
+                        this.showToastMessage(`刷新成功，获取 ${data.count}/${data.total_count || data.count} 条新闻（${sortLabel}）${fallbackNote}`, 'success');
                     }
                 }
             } catch (error) {
@@ -214,6 +219,11 @@ createApp({
         },
 
         refreshNews() {
+            this.fetchNews(true);
+        },
+
+        setNewsSort(sort) {
+            this.newsSort = sort;
             this.fetchNews(true);
         },
 

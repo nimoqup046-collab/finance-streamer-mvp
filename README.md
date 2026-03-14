@@ -12,9 +12,9 @@
 |------|------|
 | **📰 新闻采集** | 并发从东方财富、新浪财经、财联社、第一财经获取最新新闻 |
 | **🔍 关键词搜索** | 实时在新闻列表中按标题/分类/来源搜索 |
-| **📝 直播稿生成** | 根据选中新闻生成专业直播脚本，支持时长和风格调节 |
-| **📱 公众号文章** | 生成可直接粘贴到微信公众号的格式化文章 |
-| **📄 深度长文** | 生成深度调研分析报告 |
+| **📝 直播稿生成** | 基于“编辑部 brief + 主线判断”生成更适合口播的直播稿 |
+| **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文 |
+| **📄 深度长文** | 输出带框架、机会与风险并重的深度研判文章 |
 | **🚀 一键全部生成** | 三种格式**并行**生成，比逐个生成快 3 倍 |
 | **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看三种结果 |
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
@@ -30,11 +30,10 @@
 ```bash
 # 1. 配置环境变量
 cat > .env << 'EOF'
-AI_PROVIDER=doubao
-DOUBAO_API_KEY=your-api-key-here
-DOUBAO_API_BASE=https://ark.cn-beijing.volces.com/api/v3
-DOUBAO_ENDPOINT_ID=
-DOUBAO_MODEL=doubao-1-5-pro-32k-250115
+AI_PROVIDER=zhipu
+ZHIPU_API_KEY=your-api-key-here
+ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
+ZHIPU_MODEL=glm-4.7
 EOF
 
 # 2. 安装依赖
@@ -64,7 +63,7 @@ python3 -m http.server 4173
 2. 登录 [Railway.app](https://railway.app)
 3. 新建项目 → 选择 GitHub 仓库
 4. 使用仓库内的 `Dockerfile` 作为唯一部署入口
-5. 在环境变量中设置 `AI_PROVIDER` 和对应的 API Key（默认豆包：`DOUBAO_API_KEY`）
+5. 在环境变量中设置 `AI_PROVIDER` 和对应的 API Key（推荐智谱：`ZHIPU_API_KEY`）
 6. 部署完成后，可得到类似 `https://finance-streamer-mvp-production.up.railway.app` 的网址
 
 ### 方式二：阿里云轻量服务器
@@ -76,8 +75,8 @@ chmod +x deploy.sh
 ./deploy.sh
 
 # 2. 配置环境变量
-export AI_PROVIDER="doubao"
-export DOUBAO_API_KEY="your-key-here"
+export AI_PROVIDER="zhipu"
+export ZHIPU_API_KEY="your-key-here"
 
 # 3. 重启服务
 systemctl restart finance-assistant
@@ -117,7 +116,10 @@ finance-streamer-mvp/
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `AI_PROVIDER` | AI 提供商 | `doubao` |
+| `AI_PROVIDER` | AI 提供商 | `zhipu` |
+| `ZHIPU_API_KEY` | 智谱 API Key | `xxx` |
+| `ZHIPU_API_BASE` | 智谱 API Base | `https://open.bigmodel.cn/api/paas/v4` |
+| `ZHIPU_MODEL` | 智谱模型（推荐中文写作） | `glm-4.7` |
 | `DOUBAO_API_KEY` | 豆包 API Key | `xxx` |
 | `DOUBAO_API_BASE` | 豆包 API Base | `https://ark.cn-beijing.volces.com/api/v3` |
 | `DOUBAO_ENDPOINT_ID` | 方舟推理接入点 ID，优先于模型名 | `ep-202503...` |
@@ -137,8 +139,8 @@ finance-streamer-mvp/
 
 ## 📝 使用流程
 
-1. 打开网站，系统自动加载今日新闻
-2. 使用搜索框或分类标签筛选感兴趣的新闻
+1. 打开网站，系统自动加载今日新闻（默认热点优先，最多 100 条）
+2. 使用“热点优先 / 最新优先”、搜索框或分类标签筛选感兴趣的新闻
 3. 勾选需要播报的新闻
 4. 在右侧调整直播时长和写作风格
 5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）

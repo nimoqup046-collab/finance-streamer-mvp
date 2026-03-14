@@ -73,6 +73,14 @@
                         <h2>📰 今日新闻 <span class="news-count">{{ news.length }}条</span></h2>
                         <div class="filters">
                             <button
+                                @click="setNewsSort('hot')"
+                                :class="['filter-btn', { active: newsSort === 'hot' }]"
+                            >🔥 热点优先</button>
+                            <button
+                                @click="setNewsSort('latest')"
+                                :class="['filter-btn', { active: newsSort === 'latest' }]"
+                            >🕒 最新优先</button>
+                            <button
                                 v-for="cat in categories"
                                 :key="cat"
                                 @click="setCategory(cat)"

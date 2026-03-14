@@ -47,6 +47,20 @@ NEWS_SOURCES = {
         "title_selector": "h2 a, .title a",
         "link_selector": "a",
     },
+    "stcn": {
+        "name": "证券时报",
+        "url": "https://www.stcn.com/",
+        "list_selector": "a[href*='/article/detail/']",
+        "title_selector": "a",
+        "link_selector": "a",
+    },
+    "cnstock": {
+        "name": "上海证券报",
+        "url": "https://www.cnstock.com/",
+        "list_selector": "a[href*='Detail/'], a[href*='topicDetail/']",
+        "title_selector": "a",
+        "link_selector": "a",
+    },
 }
 
 
@@ -89,7 +103,7 @@ class NewsFetcher:
                 except Exception:
                     pass
 
-        for item in soup.select("li")[:30]:
+        for item in soup.select("li")[:80]:
             title_elem = item.select_one("a")
             if title_elem and title_elem.get("href"):
                 title = title_elem.get_text(strip=True)
@@ -100,7 +114,7 @@ class NewsFetcher:
                         "url": "https://finance.eastmoney.com" + title_elem.get("href", ""),
                         "time": datetime.now().strftime("%H:%M"),
                     })
-                    if len(news_list) >= 20:
+                    if len(news_list) >= 40:
                         break
 
         return news_list
@@ -110,7 +124,7 @@ class NewsFetcher:
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
-        for item in soup.select(".blk_hdline_01, .news-item")[:20]:
+        for item in soup.select(".blk_hdline_01, .news-item")[:60]:
             title_elem = item.select_one("a")
             if title_elem:
                 title = title_elem.get_text(strip=True)
@@ -145,6 +159,8 @@ class NewsFetcher:
         for anchor in anchors:
             title = anchor.get_text(" ", strip=True)
             href = anchor.get("href", "").strip()
+            title = re.sub(r"\s+\d+\s+(分钟前|小时前|天前)$", "", title)
+            title = re.sub(r"\s+0\s+\d+(分钟前|小时前|天前)$", "", title)
             if len(title) <= 10 or not href:
                 continue
             if title in seen_titles:
@@ -160,7 +176,7 @@ class NewsFetcher:
                 "url": href,
                 "time": datetime.now().strftime("%H:%M"),
             })
-            if len(news_list) >= 20:
+            if len(news_list) >= 40:
                 break
 
         return news_list
@@ -182,7 +198,7 @@ class NewsFetcher:
                     .get("telegraphList", [])
                 )
                 parsed_items = []
-                for item in telegraph_items[:30]:
+                for item in telegraph_items[:80]:
                     title = self._clean_cls_text(item.get("title") or item.get("content", ""))
                     if len(title) < 10:
                         continue
@@ -219,6 +235,56 @@ class NewsFetcher:
                         "url": "",
                         "time": time_str or datetime.now().strftime("%H:%M"),
                     })
+
+        return news_list
+
+    def parse_stcn(self, html: str) -> List[Dict]:
+        """解析证券时报首页新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+        seen_titles = set()
+
+        for anchor in soup.select("a[href*='/article/detail/'], a[href*='/topic/detail/']"):
+            title = anchor.get_text(" ", strip=True)
+            href = anchor.get("href", "").strip()
+            if len(title) <= 12 or not href or title in seen_titles:
+                continue
+            if href.startswith("/"):
+                href = f"https://www.stcn.com{href}"
+            seen_titles.add(title)
+            news_list.append({
+                "title": title,
+                "source": "证券时报",
+                "url": href,
+                "time": datetime.now().strftime("%H:%M"),
+            })
+            if len(news_list) >= 35:
+                break
+
+        return news_list
+
+    def parse_cnstock(self, html: str) -> List[Dict]:
+        """解析上海证券报首页新闻"""
+        news_list = []
+        soup = BeautifulSoup(html, "lxml")
+        seen_titles = set()
+
+        for anchor in soup.select("a[href*='Detail/'], a[href*='topicDetail/'], a[href*='commonDetail/']"):
+            title = anchor.get_text(" ", strip=True)
+            href = anchor.get("href", "").strip()
+            if len(title) <= 12 or not href or title in seen_titles:
+                continue
+            if href.startswith("/"):
+                href = f"https://www.cnstock.com{href}"
+            seen_titles.add(title)
+            news_list.append({
+                "title": title,
+                "source": "上海证券报",
+                "url": href,
+                "time": datetime.now().strftime("%H:%M"),
+            })
+            if len(news_list) >= 35:
+                break
 
         return news_list
 
@@ -275,6 +341,8 @@ class NewsFetcher:
                 self._fetch_source(session, "eastmoney"),
                 self._fetch_source(session, "sina"),
                 self._fetch_source(session, "yicai"),
+                self._fetch_source(session, "stcn"),
+                self._fetch_source(session, "cnstock"),
                 return_exceptions=True,
             )
             for result in results:
@@ -292,10 +360,12 @@ class NewsFetcher:
 
         for news in unique_news:
             news["category"] = self._categorize_news(news["title"])
+            news["hot_score"] = self._score_news(news["title"], news["category"], news["source"])
             stable_hash = hashlib.md5(f"{news['source']}:{news['title']}".encode()).hexdigest()[:8]
             news["id"] = f"{news['source']}_{stable_hash}"
 
-        return unique_news[:50]
+        unique_news.sort(key=lambda item: item.get("hot_score", 0), reverse=True)
+        return unique_news[:100]
 
     @staticmethod
     def _normalize_title(title: str) -> str:
@@ -339,12 +409,31 @@ class NewsFetcher:
 
     def _categorize_news(self, title: str) -> str:
         """根据标题给新闻分类"""
+        title = title or ""
         keywords = {
-            "宏观": ["央行", "降准", "加息", "GDP", "通胀", "政策", "国务院"],
-            "A股": ["A股", "上证", "深证", "创业板", "指数", "大盘", "股市"],
-            "美股": ["美股", "纳斯达克", "标普", "道指", "美联储", "华尔街"],
-            "行业": ["新能源", "芯片", "半导体", "医药", "白酒", "房地产", "银行"],
-            "个股": ["涨停", "跌停", "公告", "重组", "并购", "业绩"],
+            "宏观": [
+                "央行", "降准", "降息", "加息", "逆回购", "MLF", "LPR", "GDP", "CPI", "PPI",
+                "PMI", "社融", "财政", "货币政策", "财政政策", "国务院", "发改委", "商务部",
+                "出口", "进口", "关税", "汇率", "人民币", "美元", "黄金", "原油", "国债",
+                "美联储", "非农", "就业", "通胀", "经济", "增长", "政策"
+            ],
+            "A股": [
+                "A股", "沪指", "深成指", "创业板", "科创板", "北交所", "上证", "深证", "两市",
+                "北向资金", "龙虎榜", "量化", "涨停潮", "题材股", "沪深", "大盘", "股市"
+            ],
+            "美股": [
+                "美股", "纳斯达克", "纳指", "标普", "道指", "华尔街", "美债", "英伟达", "特斯拉",
+                "苹果", "微软", "亚马逊", "谷歌", "Meta", "OpenAI"
+            ],
+            "行业": [
+                "新能源", "光伏", "储能", "风电", "算力", "AI", "人工智能", "芯片", "半导体", "医药",
+                "创新药", "白酒", "房地产", "银行", "券商", "保险", "消费", "军工", "机器人",
+                "锂电", "稀土", "煤炭", "钢铁", "有色", "航运", "港口", "制造业", "汽车", "电商"
+            ],
+            "个股": [
+                "涨停", "跌停", "公告", "重组", "并购", "业绩", "预增", "预亏", "回购", "减持",
+                "增持", "停牌", "复牌", "分红", "年报", "季报", "股份", "有限公司", "集团"
+            ],
         }
 
         for category, kw_list in keywords.items():
@@ -352,6 +441,43 @@ class NewsFetcher:
                 return category
 
         return "财经"
+
+    def _score_news(self, title: str, category: str, source: str) -> int:
+        """给新闻打热点/洞察优先级分，便于前端筛热点。"""
+        score = 10
+        title = title or ""
+
+        source_bonus = {
+            "财联社": 8,
+            "第一财经": 6,
+            "证券时报": 6,
+            "上海证券报": 6,
+            "东方财富网": 4,
+            "新浪财经": 3,
+        }
+        category_bonus = {
+            "宏观": 14,
+            "A股": 10,
+            "美股": 10,
+            "行业": 8,
+            "个股": 6,
+            "财经": 5,
+        }
+        score += source_bonus.get(source, 0)
+        score += category_bonus.get(category, 0)
+
+        high_signal_keywords = [
+            "突发", "重磅", "首次", "明确", "落地", "加码", "叫停", "新高", "大涨", "大跌",
+            "政策", "规划", "补贴", "关税", "降准", "降息", "美联储", "财报", "超预期", "爆发",
+            "并购", "回购", "订单", "价格", "涨价", "业绩", "风险", "改革", "方案"
+        ]
+        for kw in high_signal_keywords:
+            if kw in title:
+                score += 4
+
+        if len(title) >= 22:
+            score += 2
+        return score
 
     async def fetch_mock_news(self) -> List[Dict]:
         """模拟新闻数据（用于测试）"""
