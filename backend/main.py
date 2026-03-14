@@ -4,21 +4,25 @@ FastAPI 主入口
 """
 import sys
 import os
+import logging
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
-from backend.config import CORS_ORIGINS, PORT
+from backend.config import CORS_ORIGINS, PORT, API_KEY
 from backend.fetcher import fetcher
 from backend.generator import generator
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -28,13 +32,21 @@ app = FastAPI(
 )
 
 # 配置CORS
+# 当 origins 为通配符时，浏览器规范不允许同时开启 allow_credentials
+_allow_credentials = "*" not in CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=_allow_credentials,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
+
+
+# API Key 认证依赖（未设置 API_KEY 环境变量时跳过校验）
+async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="无效的API密钥")
 
 # 请求模型
 class GenerateRequest(BaseModel):
@@ -100,7 +112,8 @@ async def get_news(refresh: bool = False):
             "update_time": cache_time.isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("获取新闻失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="获取新闻失败，请稍后重试")
 
 # 获取新闻分类
 @app.get("/api/news/categories")
@@ -112,7 +125,7 @@ async def get_categories():
     }
 
 # 生成内容
-@app.post("/api/generate")
+@app.post("/api/generate", dependencies=[Depends(verify_api_key)])
 async def generate_content(request: GenerateRequest):
     """生成指定类型的内容"""
     global news_cache
@@ -160,11 +173,14 @@ async def generate_content(request: GenerateRequest):
         else:
             raise HTTPException(status_code=400, detail="不支持的内容类型")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+        logger.error("内容生成失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
 # 批量生成（一键生成全部）
-@app.post("/api/generate/all")
+@app.post("/api/generate/all", dependencies=[Depends(verify_api_key)])
 async def generate_all(news_ids: List[str]):
     """一键生成所有类型的内容"""
     global news_cache
@@ -183,7 +199,8 @@ async def generate_all(news_ids: List[str]):
         }
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+        logger.error("批量生成失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
 # 获取系统状态
 @app.get("/api/status")
