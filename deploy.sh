@@ -37,14 +37,18 @@ pip3 install -r requirements.txt
 if [ ! -f ".env" ]; then
     echo "📝 创建环境变量文件..."
     cat > .env << 'EOF'
-# AI API 配置（请填入你的 API Key）
-AI_API_KEY=your-api-key-here
-AI_API_BASE=https://api.openai.com/v1
-AI_MODEL=gpt-4o-mini
+# AI 配置（默认豆包）
+AI_PROVIDER=doubao
+DOUBAO_API_KEY=your-api-key-here
+DOUBAO_API_BASE=https://ark.cn-beijing.volces.com/api/v3
+DOUBAO_ENDPOINT_ID=
+DOUBAO_MODEL=doubao-1-5-pro-32k-250115
 
 # 服务配置
 PORT=8000
 CORS_ORIGINS=*
+NEWS_CACHE_MINUTES=30
+USE_MOCK_NEWS=false
 EOF
     echo "⚠️  请编辑 .env 文件，填入你的 AI API Key"
     echo "   位置: $APP_DIR/.env"

@@ -1,8 +1,5 @@
 [build]
-builder = "NIXPACKS"
-
-[build.env]
-PORT = "8000"
+builder = "DOCKERFILE"
 
 [deploy]
 healthcheckPath = "/health"
