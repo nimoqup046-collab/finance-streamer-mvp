@@ -26,9 +26,9 @@ ENV/
 output/
 *.pptx
 *.txt
-!requirements.txt
 *.md
 !README.md
+!requirements.txt
 
 # 系统文件
 .DS_Store

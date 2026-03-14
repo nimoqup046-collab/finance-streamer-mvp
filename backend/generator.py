@@ -3,28 +3,11 @@ AI内容生成模块
 支持生成直播稿、公众号文章、深度长文
 支持多种AI提供商：豆包、Anthropic Claude、OpenAI
 """
-import os
 import re
 from datetime import datetime
 from typing import List, Dict
 
-from backend.config import (
-    AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL,
-    ANTHROPIC_API_KEY, DOUBAO_API_KEY
-)
-
-# 根据提供商导入对应的库
-if AI_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
-    from anthropic import Anthropic
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-elif AI_PROVIDER == "doubao" and DOUBAO_API_KEY:
-    import openai
-    client = openai
-    openai.api_key = DOUBAO_API_KEY
-    openai.base_url = AI_API_BASE
-else:
-    import openai
-    client = openai
+from backend.config import AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL
 
 
 class ContentGenerator:
@@ -33,6 +16,27 @@ class ContentGenerator:
     def __init__(self):
         self.provider = AI_PROVIDER
         self.model = AI_MODEL
+        self.api_key = AI_API_KEY
+        self.api_base = AI_API_BASE
+        self.client = self._init_client()
+
+    def _init_client(self):
+        """根据提供商初始化客户端"""
+        if self.provider == "anthropic":
+            from anthropic import Anthropic
+            return Anthropic(api_key=self.api_key)
+
+        # 默认使用 OpenAI 兼容接口（豆包/OpenAI）
+        from openai import OpenAI
+        return OpenAI(api_key=self.api_key, base_url=self.api_base or None)
+
+    def _error_context(self) -> str:
+        """补充 provider/model/base，方便线上排障"""
+        return (
+            f"provider={self.provider}, "
+            f"model={self.model}, "
+            f"base_url={self.api_base or 'default'}"
+        )
 
     async def generate_stream_script(
         self,
@@ -118,7 +122,7 @@ class ContentGenerator:
             response = await self._call_ai(prompt, max_tokens=4000)
             return self._format_stream_script(response, news_items)
         except Exception as e:
-            print(f"Generation error: {e}")
+            print(f"Generation error: {e} | {self._error_context()}")
             return self._generate_fallback_script(news_items)
 
     async def generate_article(
@@ -207,7 +211,7 @@ class ContentGenerator:
             response = await self._call_ai(prompt, max_tokens=4000)
             return self._format_article(response)
         except Exception as e:
-            print(f"Article generation error: {e}")
+            print(f"Article generation error: {e} | {self._error_context()}")
             return self._generate_fallback_article(news_items)
 
     async def generate_deep_dive(
@@ -325,14 +329,17 @@ class ContentGenerator:
         try:
             return await self._call_ai(prompt, max_tokens=6000)
         except Exception as e:
-            print(f"Deep dive generation error: {e}")
+            print(f"Deep dive generation error: {e} | {self._error_context()}")
             return self._generate_fallback_deep_dive(news_items)
 
     async def _call_ai(self, prompt: str, max_tokens: int = 2000) -> str:
         """调用AI接口"""
+        if not self.api_key:
+            raise RuntimeError(f"缺少 {self.provider} 的 API Key")
+
         if self.provider == "anthropic":
             # 使用 Anthropic Claude API
-            message = client.messages.create(
+            message = self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=0.8,
@@ -344,7 +351,7 @@ class ContentGenerator:
             return message.content[0].text
         else:
             # 使用 OpenAI 兼容接口（豆包等）
-            response = client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。"},
@@ -353,7 +360,8 @@ class ContentGenerator:
                 max_tokens=max_tokens,
                 temperature=0.8
             )
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            return content if content else ""
 
     def _format_stream_script(self, content: str, news_items: List[Dict]) -> str:
         """格式化直播稿"""

@@ -2,12 +2,12 @@
 财经新闻爬取模块
 参考 https://github.com/cxyo/xw 项目
 """
-import asyncio
 import aiohttp
-from datetime import datetime, timedelta
+import json
+import re
+from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict
-import json
 
 # 新闻源配置
 NEWS_SOURCES = {
@@ -76,7 +76,7 @@ class NewsFetcher:
             title_elem = item.select_one("a")
             if title_elem and title_elem.get("href"):
                 title = title_elem.get_text(strip=True)
-                if len(title) > 10 and "股市" in title or "A股" in title or "央行" in title or "板块" in title:
+                if len(title) > 10 and any(keyword in title for keyword in ("股市", "A股", "央行", "板块")):
                     news_list.append({
                         "title": title,
                         "source": "东方财富网",
@@ -108,7 +108,43 @@ class NewsFetcher:
         return news_list
 
     def parse_cls(self, html: str) -> List[Dict]:
-        """解析财联社电报"""
+        """解析财联社电报（优先读取 Next.js 内嵌数据）"""
+        next_data_match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            html,
+            re.DOTALL
+        )
+        if next_data_match:
+            try:
+                next_data = json.loads(next_data_match.group(1))
+                telegraph_items = (
+                    next_data.get("props", {})
+                    .get("initialState", {})
+                    .get("telegraph", {})
+                    .get("telegraphList", [])
+                )
+                parsed_items = []
+                for item in telegraph_items[:30]:
+                    title = self._clean_cls_text(item.get("title") or item.get("content", ""))
+                    if len(title) < 10:
+                        continue
+
+                    detail_url = item.get("share_url") or item.get("url") or ""
+                    if detail_url and detail_url.startswith("/"):
+                        detail_url = f"https://www.cls.cn{detail_url}"
+
+                    parsed_items.append({
+                        "title": title,
+                        "source": "财联社",
+                        "url": detail_url,
+                        "time": self._format_cls_time(item.get("ctime") or item.get("created_at"))
+                    })
+                if parsed_items:
+                    return parsed_items
+            except Exception as e:
+                print(f"CLS next data parse error: {e}")
+
+        # 解析财联社电报
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
@@ -130,11 +166,47 @@ class NewsFetcher:
 
         return news_list
 
+    def _clean_cls_text(self, text: str) -> str:
+        """清理财联社正文中的 HTML 标记"""
+        return BeautifulSoup(text or "", "lxml").get_text(" ", strip=True)
+
+    def _format_cls_time(self, raw_time) -> str:
+        """兼容财联社不同时间字段格式"""
+        if not raw_time:
+            return datetime.now().strftime("%H:%M")
+
+        raw_time = str(raw_time).strip()
+        if raw_time.isdigit():
+            timestamp = int(raw_time)
+            if timestamp > 10**12:
+                timestamp = timestamp / 1000
+            try:
+                return datetime.fromtimestamp(timestamp).strftime("%H:%M")
+            except (OverflowError, ValueError):
+                return datetime.now().strftime("%H:%M")
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%H:%M:%S", "%H:%M"):
+            try:
+                return datetime.strptime(raw_time, fmt).strftime("%H:%M")
+            except ValueError:
+                continue
+
+        return raw_time[:5] if len(raw_time) >= 5 else datetime.now().strftime("%H:%M")
+
     async def fetch_all_news(self) -> List[Dict]:
         """从所有源获取新闻"""
         all_news = []
 
         async with aiohttp.ClientSession() as session:
+            # 财联社：当前最稳定，优先抓取
+            try:
+                html = await self.fetch_url(session, NEWS_SOURCES["cls"]["url"])
+                if html:
+                    news = self.parse_cls(html)
+                    all_news.extend(news)
+            except Exception as e:
+                print(f"CLS error: {e}")
+
             # 东方财富网
             try:
                 html = await self.fetch_url(session, NEWS_SOURCES["eastmoney"]["url"])
@@ -152,6 +224,9 @@ class NewsFetcher:
                     all_news.extend(news)
             except Exception as e:
                 print(f"Sina error: {e}")
+
+        if not all_news:
+            raise RuntimeError("所有新闻源均未返回有效内容")
 
         # 去重
         seen_titles = set()

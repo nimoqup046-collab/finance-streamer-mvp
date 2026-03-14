@@ -1,9 +1,12 @@
 // 财经主播助手 MVP - 前端逻辑
 const { createApp } = Vue;
 
-const API_BASE = window.location.hostname === 'localhost'
+const DEFAULT_API_BASE = window.location.hostname === 'localhost'
     ? 'http://localhost:8000'
     : window.location.origin;
+const API_BASE = (window.API_BASE && String(window.API_BASE).trim())
+    ? String(window.API_BASE).replace(/\/+$/, '')
+    : DEFAULT_API_BASE;
 
 createApp({
     data() {
@@ -23,6 +26,7 @@ createApp({
             // 生成结果
             result: null,
             resultType: '',
+            allResults: null,
 
             // 提示
             showToast: false,
