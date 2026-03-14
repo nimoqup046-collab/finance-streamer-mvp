@@ -8,6 +8,15 @@ const API_BASE = (window.API_BASE && String(window.API_BASE).trim())
     ? String(window.API_BASE).replace(/\/+$/, '')
     : DEFAULT_API_BASE;
 
+// 从 localStorage 读取持久化设置
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem('finance_streamer_settings');
+        if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return { duration: 30, style: '专业', apiKey: '' };
+}
+
 createApp({
     data() {
         return {
@@ -15,6 +24,7 @@ createApp({
             news: [],
             selectedNews: [],
             filterCategory: '全部',
+            searchKeyword: '',
 
             // 分类
             categories: ['全部', '宏观', 'A股', '美股', '行业', '个股', '财经'],
@@ -22,11 +32,17 @@ createApp({
             // 状态
             loading: false,
             generating: false,
+            generatingAll: false,
 
             // 生成结果
             result: null,
             resultType: '',
             allResults: null,
+            activeTab: 'stream_script',
+
+            // 设置
+            settings: loadSettings(),
+            showSettings: false,
 
             // 提示
             showToast: false,
@@ -40,10 +56,19 @@ createApp({
 
     computed: {
         filteredNews() {
-            if (this.filterCategory === '全部') {
-                return this.news;
+            let list = this.news;
+            if (this.filterCategory !== '全部') {
+                list = list.filter(n => n.category === this.filterCategory);
             }
-            return this.news.filter(n => n.category === this.filterCategory);
+            if (this.searchKeyword.trim()) {
+                const kw = this.searchKeyword.trim().toLowerCase();
+                list = list.filter(n =>
+                    n.title.toLowerCase().includes(kw) ||
+                    (n.category || '').toLowerCase().includes(kw) ||
+                    (n.source || '').toLowerCase().includes(kw)
+                );
+            }
+            return list;
         },
 
         selectedCount() {
@@ -55,9 +80,21 @@ createApp({
                 return this.filteredNews.length > 0 &&
                     this.filteredNews.every(n => this.selectedNews.includes(n.id));
             },
-            set(value) {
+            set(_value) {
                 // 由 toggleAll 方法处理
             }
+        },
+
+        hasResults() {
+            return this.result !== null || this.allResults !== null;
+        },
+
+        resultTabs() {
+            return [
+                { key: 'stream_script', label: '📝 直播稿' },
+                { key: 'article', label: '📱 公众号' },
+                { key: 'deep_dive', label: '📄 深度长文' },
+            ];
         },
 
         resultTitle() {
@@ -66,16 +103,27 @@ createApp({
                 article: '📱 公众号文章',
                 deep_dive: '📄 深度长文'
             };
-            return titles[this.resultType] || '生成结果';
+            const type = this.allResults ? this.activeTab : this.resultType;
+            return titles[type] || '生成结果';
         },
 
         resultContent() {
+            if (this.allResults) {
+                const r = this.allResults[this.activeTab];
+                if (this.activeTab === 'article' && r && r.content) return r.content;
+                return r || '';
+            }
             if (!this.result) return '';
-
             if (this.resultType === 'article' && this.result.content) {
                 return this.result.content;
             }
-            return this.result;
+            return typeof this.result === 'string' ? this.result : (this.result.content || '');
+        },
+
+        currentWordCount() {
+            const text = this.resultContent;
+            if (!text) return 0;
+            return text.replace(/\s/g, '').length;
         }
     },
 
@@ -92,6 +140,15 @@ createApp({
             });
         },
 
+        // 构建请求头
+        buildHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            if (this.settings.apiKey) {
+                headers['X-API-Key'] = this.settings.apiKey;
+            }
+            return headers;
+        },
+
         // 获取新闻
         async fetchNews(refresh = false) {
             this.loading = true;
@@ -104,7 +161,8 @@ createApp({
                     if (!refresh && data.cached) {
                         this.showToastMessage(`已加载缓存数据 (${data.count}条)`);
                     } else {
-                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻`);
+                        const fallbackNote = data.fallback ? '（模拟数据）' : '';
+                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻${fallbackNote}`);
                     }
                 }
             } catch (error) {
@@ -120,10 +178,24 @@ createApp({
             this.fetchNews(true);
         },
 
+        // 搜索新闻（前端实时过滤，无需调用接口）
+        searchNews() {
+            // filteredNews computed 会自动处理，此方法作为回车处理入口
+        },
+
+        // 点击新闻条目切换选中
+        toggleNewsItem(id) {
+            const idx = this.selectedNews.indexOf(id);
+            if (idx > -1) {
+                this.selectedNews.splice(idx, 1);
+            } else {
+                this.selectedNews.push(id);
+            }
+        },
+
         // 全选/取消全选
         toggleAll() {
             if (this.allSelected) {
-                // 取消全选
                 this.filteredNews.forEach(n => {
                     const index = this.selectedNews.indexOf(n.id);
                     if (index > -1) {
@@ -131,7 +203,6 @@ createApp({
                     }
                 });
             } else {
-                // 全选
                 this.filteredNews.forEach(n => {
                     if (!this.selectedNews.includes(n.id)) {
                         this.selectedNews.push(n.id);
@@ -148,40 +219,45 @@ createApp({
             }
 
             this.generating = true;
+            this.generatingAll = false;
             this.result = null;
+            this.allResults = null;
             this.resultType = type;
 
             try {
                 const response = await fetch(`${API_BASE}/api/generate`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: this.buildHeaders(),
                     body: JSON.stringify({
                         news_ids: this.selectedNews,
                         content_type: type,
-                        duration: 30,
-                        style: '专业'
+                        duration: this.settings.duration,
+                        style: this.settings.style
                     })
                 });
 
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
                 const data = await response.json();
 
-                if (data.content || data.data) {
-                    this.result = data.content || data;
-                    this.showToastMessage('生成成功！');
+                if (data.content !== undefined || data.titles) {
+                    this.result = type === 'article' ? data : data.content;
+                    this.showToastMessage(`生成成功！(${this.currentWordCount} 字)`);
                 } else {
-                    throw new Error('生成失败');
+                    throw new Error('生成失败，返回数据为空');
                 }
             } catch (error) {
                 console.error('生成失败:', error);
-                this.showToastMessage('生成失败，请重试');
+                this.showToastMessage(`生成失败：${error.message}`);
             } finally {
                 this.generating = false;
             }
         },
 
-        // 一键生成全部
+        // 一键生成全部（并行）
         async generateAll() {
             if (this.selectedCount === 0) {
                 this.showToastMessage('请先选择新闻');
@@ -189,32 +265,41 @@ createApp({
             }
 
             this.generating = true;
+            this.generatingAll = true;
+            this.result = null;
+            this.allResults = null;
 
             try {
                 const response = await fetch(`${API_BASE}/api/generate/all`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: this.buildHeaders(),
                     body: JSON.stringify(this.selectedNews)
                 });
 
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
                 const data = await response.json();
 
-                // 默认显示直播稿
-                this.resultType = 'stream_script';
-                this.result = data.stream_script || '生成失败';
-
-                // 存储其他结果供下载
                 this.allResults = data;
+                this.activeTab = 'stream_script';
 
                 this.showToastMessage('全部生成完成！');
             } catch (error) {
                 console.error('生成失败:', error);
-                this.showToastMessage('生成失败，请重试');
+                this.showToastMessage(`生成失败：${error.message}`);
             } finally {
                 this.generating = false;
+                this.generatingAll = false;
             }
+        },
+
+        // 清除结果
+        clearResult() {
+            this.result = null;
+            this.allResults = null;
         },
 
         // 复制结果
@@ -222,8 +307,7 @@ createApp({
             try {
                 await navigator.clipboard.writeText(this.resultContent);
                 this.showToastMessage('已复制到剪贴板');
-            } catch (error) {
-                // 降级方案
+            } catch (_) {
                 const textarea = document.createElement('textarea');
                 textarea.value = this.resultContent;
                 document.body.appendChild(textarea);
@@ -237,11 +321,12 @@ createApp({
         // 下载结果
         downloadResult() {
             const content = this.resultContent;
+            const type = this.allResults ? this.activeTab : this.resultType;
             const filename = {
                 stream_script: `直播稿_${this.getDateTimeString()}.txt`,
                 article: `公众号文章_${this.getDateTimeString()}.md`,
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`
-            }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
+            }[type] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
@@ -256,10 +341,18 @@ createApp({
             this.showToastMessage('下载成功');
         },
 
+        // 保存设置
+        saveSettings() {
+            try {
+                localStorage.setItem('finance_streamer_settings', JSON.stringify(this.settings));
+            } catch (_) {}
+            this.showSettings = false;
+            this.showToastMessage('设置已保存');
+        },
+
         // 获取时间字符串
         getDateTimeString() {
-            const now = new Date();
-            return now.toISOString().slice(0, 10).replace(/-/g, '');
+            return new Date().toISOString().slice(0, 10).replace(/-/g, '');
         },
 
         // 显示提示
@@ -273,11 +366,8 @@ createApp({
     },
 
     mounted() {
-        // 初始化
         this.updateTime();
         this.timer = setInterval(this.updateTime, 1000);
-
-        // 加载新闻
         this.fetchNews();
     },
 
@@ -287,3 +377,4 @@ createApp({
         }
     }
 }).mount('#app');
+

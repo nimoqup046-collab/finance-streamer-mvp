@@ -18,6 +18,9 @@
                     <button @click="refreshNews" class="btn-icon" :disabled="loading">
                         🔄 刷新
                     </button>
+                    <button @click="showSettings = true" class="btn-icon" title="设置">
+                        ⚙️ 设置
+                    </button>
                 </div>
             </div>
         </header>
@@ -28,7 +31,7 @@
                 <!-- 左侧：新闻列表 -->
                 <section class="news-section">
                     <div class="section-header">
-                        <h2>📰 今日新闻 ({{ news.length }}条)</h2>
+                        <h2>📰 今日新闻 ({{ filteredNews.length }}条)</h2>
                         <div class="filters">
                             <button
                                 v-for="cat in categories"
@@ -39,6 +42,22 @@
                                 {{ cat }}
                             </button>
                         </div>
+                    </div>
+
+                    <!-- 搜索框 -->
+                    <div class="search-bar">
+                        <input
+                            type="text"
+                            v-model="searchKeyword"
+                            placeholder="🔍 搜索新闻关键词..."
+                            class="search-input"
+                            @keyup.enter="searchNews"
+                        >
+                        <button
+                            v-if="searchKeyword"
+                            @click="searchKeyword = ''"
+                            class="search-clear"
+                        >✕</button>
                     </div>
 
                     <!-- 全选操作 -->
@@ -62,8 +81,9 @@
                             v-for="item in filteredNews"
                             :key="item.id"
                             :class="['news-item', { selected: selectedNews.includes(item.id) }]"
+                            @click="toggleNewsItem(item.id)"
                         >
-                            <label class="news-checkbox">
+                            <label class="news-checkbox" @click.stop>
                                 <input
                                     type="checkbox"
                                     :value="item.id"
@@ -78,12 +98,19 @@
                                     <span class="category" :data-category="item.category">
                                         {{ item.category }}
                                     </span>
+                                    <a
+                                        v-if="item.url"
+                                        :href="item.url"
+                                        target="_blank"
+                                        class="news-link"
+                                        @click.stop
+                                    >原文 ↗</a>
                                 </div>
                             </div>
                         </div>
 
                         <div v-if="filteredNews.length === 0" class="empty-state">
-                            <p>暂无新闻</p>
+                            <p>{{ searchKeyword ? '未找到相关新闻' : '暂无新闻' }}</p>
                         </div>
                     </div>
                 </section>
@@ -92,6 +119,21 @@
                 <section class="generate-section">
                     <div class="section-header">
                         <h2>🚀 内容生成</h2>
+                        <div class="gen-settings-row">
+                            <label class="mini-label">时长</label>
+                            <select v-model="settings.duration" class="mini-select">
+                                <option :value="15">15分钟</option>
+                                <option :value="30">30分钟</option>
+                                <option :value="60">60分钟</option>
+                                <option :value="90">90分钟</option>
+                            </select>
+                            <label class="mini-label">风格</label>
+                            <select v-model="settings.style" class="mini-select">
+                                <option value="专业">专业</option>
+                                <option value="活泼">活泼</option>
+                                <option value="严肃">严肃</option>
+                            </select>
+                        </div>
                     </div>
 
                     <!-- 生成按钮组 -->
@@ -131,13 +173,26 @@
                     </div>
 
                     <!-- 生成结果 -->
-                    <div v-if="result" class="result-section">
+                    <div v-if="hasResults" class="result-section">
+                        <!-- 多结果标签页（全部生成时显示） -->
+                        <div v-if="allResults" class="result-tabs">
+                            <button
+                                v-for="tab in resultTabs"
+                                :key="tab.key"
+                                :class="['result-tab', { active: activeTab === tab.key }]"
+                                @click="activeTab = tab.key"
+                            >{{ tab.label }}</button>
+                        </div>
+
                         <div class="result-header">
-                            <h3>{{ resultTitle }}</h3>
+                            <h3>
+                                {{ resultTitle }}
+                                <span v-if="currentWordCount" class="word-count">{{ currentWordCount }} 字</span>
+                            </h3>
                             <div class="result-actions">
                                 <button @click="copyResult" class="btn-small">📋 复制</button>
                                 <button @click="downloadResult" class="btn-small">💾 下载</button>
-                                <button @click="result = null" class="btn-small btn-close">✕</button>
+                                <button @click="clearResult" class="btn-small btn-close">✕</button>
                             </div>
                         </div>
                         <div class="result-content">
@@ -149,21 +204,66 @@
                     <div v-if="generating" class="loading-state">
                         <div class="spinner"></div>
                         <p>AI正在生成内容，请稍候...</p>
+                        <p v-if="generatingAll" class="loading-sub">全部生成模式：三种格式并行生成，节省等待时间</p>
                     </div>
 
                     <!-- 提示信息 -->
-                    <div v-if="!result && !generating" class="tips-section">
+                    <div v-if="!hasResults && !generating" class="tips-section">
                         <h3>💡 使用提示</h3>
                         <ol>
-                            <li>在左侧勾选需要播报的新闻</li>
+                            <li>在左侧勾选需要播报的新闻（可关键词搜索）</li>
+                            <li>调整右上方的直播时长和风格</li>
                             <li>点击上方生成按钮选择内容类型</li>
-                            <li>等待2-3分钟，AI将自动生成内容</li>
+                            <li>「全部生成」会并行生成三种格式，效率更高</li>
                             <li>生成完成后可直接复制或下载</li>
                         </ol>
                     </div>
                 </section>
             </div>
         </main>
+
+        <!-- 设置面板 -->
+        <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>⚙️ 设置</h3>
+                    <button @click="showSettings = false" class="btn-close-modal">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>API Key（可选，与后端配置一致）</label>
+                        <input
+                            type="password"
+                            v-model="settings.apiKey"
+                            placeholder="X-API-Key"
+                            class="form-input"
+                        >
+                        <p class="form-hint">仅在后端设置了 API_KEY 环境变量时需要填写</p>
+                    </div>
+                    <div class="form-group">
+                        <label>默认直播时长（分钟）</label>
+                        <select v-model="settings.duration" class="form-input">
+                            <option :value="15">15 分钟</option>
+                            <option :value="30">30 分钟</option>
+                            <option :value="60">60 分钟</option>
+                            <option :value="90">90 分钟</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>默认写作风格</label>
+                        <select v-model="settings.style" class="form-input">
+                            <option value="专业">专业</option>
+                            <option value="活泼">活泼</option>
+                            <option value="严肃">严肃</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button @click="saveSettings" class="btn btn-primary">保存设置</button>
+                    <button @click="showSettings = false" class="btn">取消</button>
+                </div>
+            </div>
+        </div>
 
         <!-- 复制成功提示 -->
         <transition name="fade">
@@ -175,3 +275,4 @@
     <script src="app.js"></script>
 </body>
 </html>
+
