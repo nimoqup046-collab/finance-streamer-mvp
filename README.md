@@ -10,11 +10,14 @@
 
 | 功能 | 说明 |
 |------|------|
-| **📰 新闻采集** | 自动从东方财富、新浪财经、财联社获取最新新闻 |
-| **📝 直播稿生成** | 根据选中新闻生成专业直播脚本 |
+| **📰 新闻采集** | 并发从东方财富、新浪财经、财联社获取最新新闻 |
+| **🔍 关键词搜索** | 实时在新闻列表中按标题/分类/来源搜索 |
+| **📝 直播稿生成** | 根据选中新闻生成专业直播脚本，支持时长和风格调节 |
 | **📱 公众号文章** | 生成可直接粘贴到微信公众号的格式化文章 |
 | **📄 深度长文** | 生成深度调研分析报告 |
-| **🚀 一键生成** | 同时生成多种格式内容 |
+| **🚀 一键全部生成** | 三种格式**并行**生成，比逐个生成快 3 倍 |
+| **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看三种结果 |
+| **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
 
 ---
 
@@ -91,16 +94,16 @@ systemctl restart finance-assistant
 ```
 finance-streamer-mvp/
 ├── backend/
-│   ├── main.py          # FastAPI 主入口
+│   ├── main.py          # FastAPI 主入口（含 /api/news/search 接口）
 │   ├── config.py        # 配置文件
-│   ├── fetcher.py       # 新闻爬取
-│   └── generator.py     # AI 内容生成
+│   ├── fetcher.py       # 新闻并发爬取（asyncio.gather）
+│   └── generator.py     # AI 异步内容生成（AsyncOpenAI / AsyncAnthropic）
 ├── Dockerfile           # Railway Docker 部署入口
 ├── frontend/
-│   ├── index.html       # 主页面
+│   ├── index.html       # 主页面（含搜索、设置面板、多结果标签页）
 │   ├── style.css        # 样式
 │   ├── config.js        # 前端 API 地址配置
-│   └── app.js           # 前端逻辑
+│   └── app.js           # 前端逻辑（含本地持久化设置）
 ├── requirements.txt
 ├── railway.toml         # Railway 部署配置
 └── README.md
@@ -126,16 +129,19 @@ finance-streamer-mvp/
 | `CORS_ORIGINS` | 允许跨域来源 | `*` |
 | `NEWS_CACHE_MINUTES` | 新闻缓存分钟数 | `30` |
 | `USE_MOCK_NEWS` | 是否强制使用模拟新闻 | `false` |
+| `API_KEY` | 接口鉴权密钥（生产环境建议设置）| `your-secret` |
 
 ---
 
 ## 📝 使用流程
 
 1. 打开网站，系统自动加载今日新闻
-2. 勾选需要播报的新闻
-3. 点击生成按钮（直播稿/公众号/深度长文）
-4. 等待 2-3 分钟，AI 生成完成
-5. 复制或下载生成的内容
+2. 使用搜索框或分类标签筛选感兴趣的新闻
+3. 勾选需要播报的新闻
+4. 在右侧调整直播时长和写作风格
+5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
+6. 等待 AI 生成完成
+7. 通过标签页切换不同格式，复制或下载内容
 
 ---
 
@@ -146,15 +152,26 @@ finance-streamer-mvp/
 GET /api/news?refresh=true
 ```
 
+### 搜索新闻
+```
+GET /api/news/search?q=关键词
+```
+
 ### 生成内容
 ```
 POST /api/generate
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",
+  "content_type": "stream_script",  // stream_script | article | deep_dive
   "duration": 30,
   "style": "专业"
 }
+```
+
+### 一键全部生成（并行）
+```
+POST /api/generate/all
+["id1", "id2"]
 ```
 
 ### 健康检查
@@ -168,13 +185,14 @@ GET /health
 
 - [ ] PPT 自动生成
 - [ ] 信息图生成
-- [ ] 新闻去重优化
-- [ ] 更多新闻源
-- [ ] 历史记录保存
+- [ ] 历史记录保存（IndexedDB）
 - [ ] 用户系统
+- [ ] 更多新闻源（证券时报、第一财经）
+- [ ] 流式输出（Server-Sent Events）
 
 ---
 
 ## 📄 License
 
 MIT
+

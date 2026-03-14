@@ -2,12 +2,17 @@
 财经新闻爬取模块
 参考 https://github.com/cxyo/xw 项目
 """
+import asyncio
+import hashlib
 import aiohttp
 import json
+import logging
 import re
 from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict
+
+logger = logging.getLogger(__name__)
 
 # 新闻源配置
 NEWS_SOURCES = {
@@ -50,7 +55,7 @@ class NewsFetcher:
             async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return await response.text(errors="ignore")
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            logger.warning("Error fetching %s: %s", url, e)
             return ""
 
     def parse_eastmoney(self, html: str) -> List[Dict]:
@@ -142,7 +147,7 @@ class NewsFetcher:
                 if parsed_items:
                     return parsed_items
             except Exception as e:
-                print(f"CLS next data parse error: {e}")
+                logger.warning("CLS next data parse error: %s", e)
 
         # 解析财联社电报
         news_list = []
@@ -193,54 +198,55 @@ class NewsFetcher:
 
         return raw_time[:5] if len(raw_time) >= 5 else datetime.now().strftime("%H:%M")
 
+    async def _fetch_source(self, session: aiohttp.ClientSession, source_key: str) -> List[Dict]:
+        """获取单个新闻源"""
+        source = NEWS_SOURCES[source_key]
+        try:
+            html = await self.fetch_url(session, source["url"])
+            if not html:
+                return []
+            parse_fn = getattr(self, f"parse_{source_key}")
+            return parse_fn(html)
+        except Exception as e:
+            logger.warning("%s fetch error: %s", source_key, e)
+            return []
+
     async def fetch_all_news(self) -> List[Dict]:
-        """从所有源获取新闻"""
+        """从所有源并发获取新闻"""
         all_news = []
 
         async with aiohttp.ClientSession() as session:
-            # 财联社：当前最稳定，优先抓取
-            try:
-                html = await self.fetch_url(session, NEWS_SOURCES["cls"]["url"])
-                if html:
-                    news = self.parse_cls(html)
-                    all_news.extend(news)
-            except Exception as e:
-                print(f"CLS error: {e}")
-
-            # 东方财富网
-            try:
-                html = await self.fetch_url(session, NEWS_SOURCES["eastmoney"]["url"])
-                if html:
-                    news = self.parse_eastmoney(html)
-                    all_news.extend(news)
-            except Exception as e:
-                print(f"Eastmoney error: {e}")
-
-            # 新浪财经
-            try:
-                html = await self.fetch_url(session, NEWS_SOURCES["sina"]["url"])
-                if html:
-                    news = self.parse_sina(html)
-                    all_news.extend(news)
-            except Exception as e:
-                print(f"Sina error: {e}")
+            results = await asyncio.gather(
+                self._fetch_source(session, "cls"),
+                self._fetch_source(session, "eastmoney"),
+                self._fetch_source(session, "sina"),
+                return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, list):
+                    all_news.extend(r)
+                elif isinstance(r, Exception):
+                    logger.warning("Source fetch raised: %s", r)
 
         if not all_news:
             raise RuntimeError("所有新闻源均未返回有效内容")
 
-        # 去重
-        seen_titles = set()
+        # 去重（按标题前20字符）
+        seen_titles: set = set()
         unique_news = []
         for news in all_news:
-            title_key = news["title"][:20]  # 用前20个字符去重
+            title_key = news["title"][:20]
             if title_key not in seen_titles:
                 seen_titles.add(title_key)
                 unique_news.append(news)
 
-        # 添加分类标签
+        # 添加分类标签和稳定 ID
         for news in unique_news:
             news["category"] = self._categorize_news(news["title"])
-            news["id"] = f"{news['source']}_{hash(news['title']) % 10000}"
+            stable_hash = hashlib.md5(
+                f"{news['source']}:{news['title']}".encode()
+            ).hexdigest()[:8]
+            news["id"] = f"{news['source']}_{stable_hash}"
 
         return unique_news[:50]  # 返回最新50条
 

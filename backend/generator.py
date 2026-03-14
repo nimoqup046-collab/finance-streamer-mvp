@@ -3,11 +3,14 @@ AI内容生成模块
 支持生成直播稿、公众号文章、深度长文
 支持多种AI提供商：豆包、Anthropic Claude、OpenAI
 """
+import logging
 import re
 from datetime import datetime
 from typing import List, Dict
 
 from backend.config import AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL
+
+logger = logging.getLogger(__name__)
 
 
 class ContentGenerator:
@@ -21,14 +24,14 @@ class ContentGenerator:
         self.client = self._init_client()
 
     def _init_client(self):
-        """根据提供商初始化客户端"""
+        """根据提供商初始化异步客户端"""
         if self.provider == "anthropic":
-            from anthropic import Anthropic
-            return Anthropic(api_key=self.api_key)
+            from anthropic import AsyncAnthropic
+            return AsyncAnthropic(api_key=self.api_key)
 
         # 默认使用 OpenAI 兼容接口（豆包/OpenAI）
-        from openai import OpenAI
-        return OpenAI(api_key=self.api_key, base_url=self.api_base or None)
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=self.api_key, base_url=self.api_base or None)
 
     def _error_context(self) -> str:
         """补充 provider/model/base，方便线上排障"""
@@ -122,7 +125,7 @@ class ContentGenerator:
             response = await self._call_ai(prompt, max_tokens=4000)
             return self._format_stream_script(response, news_items)
         except Exception as e:
-            print(f"Generation error: {e} | {self._error_context()}")
+            logger.error("Generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_script(news_items)
 
     async def generate_article(
@@ -211,7 +214,7 @@ class ContentGenerator:
             response = await self._call_ai(prompt, max_tokens=4000)
             return self._format_article(response)
         except Exception as e:
-            print(f"Article generation error: {e} | {self._error_context()}")
+            logger.error("Article generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_article(news_items)
 
     async def generate_deep_dive(
@@ -329,17 +332,17 @@ class ContentGenerator:
         try:
             return await self._call_ai(prompt, max_tokens=6000)
         except Exception as e:
-            print(f"Deep dive generation error: {e} | {self._error_context()}")
+            logger.error("Deep dive generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_deep_dive(news_items)
 
     async def _call_ai(self, prompt: str, max_tokens: int = 2000) -> str:
-        """调用AI接口"""
+        """调用AI接口（异步）"""
         if not self.api_key:
             raise RuntimeError(f"缺少 {self.provider} 的 API Key")
 
         if self.provider == "anthropic":
-            # 使用 Anthropic Claude API
-            message = self.client.messages.create(
+            # 使用异步 Anthropic Claude API
+            message = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=0.8,
@@ -350,8 +353,8 @@ class ContentGenerator:
             )
             return message.content[0].text
         else:
-            # 使用 OpenAI 兼容接口（豆包等）
-            response = self.client.chat.completions.create(
+            # 使用异步 OpenAI 兼容接口（豆包等）
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "你是一位专业的财经内容创作者，拥有10年财经媒体从业经验。你擅长将复杂的财经新闻转化为通俗易懂、有价值的内容。你的文字专业但不晦涩，深入但不枯燥，观点鲜明但客观理性。"},
@@ -371,7 +374,7 @@ class ContentGenerator:
         formatted = f"""
 {'╔' + '═'*58 + '╗'}
 ║  📺 财经直播稿 - 专业版                                      ║
-║  📅 {date_str} {weekday}{' '*(24-len(date_str)-len(weekday))}║'
+║  📅 {date_str} {weekday}{' '*(24-len(date_str)-len(weekday))}║
 {'╚' + '═'*58 + '╝'}
 
 {content}
