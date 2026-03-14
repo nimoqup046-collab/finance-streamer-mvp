@@ -50,6 +50,9 @@ else:  # 默认豆包
 PORT = int(os.getenv("PORT", 8000))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
+# API 认证密钥（设置后所有生成接口需携带 X-API-Key 请求头）
+API_KEY = os.getenv("API_KEY", "")
+
 # 新闻缓存时间（分钟）
 NEWS_CACHE_MINUTES = int(os.getenv("NEWS_CACHE_MINUTES", "30"))
 USE_MOCK_NEWS = _parse_bool(os.getenv("USE_MOCK_NEWS"), False)
