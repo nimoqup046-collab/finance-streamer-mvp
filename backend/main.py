@@ -58,10 +58,11 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 # 请求模型
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive
+    content_type: str  # stream_script, article, deep_dive, ppt
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
+    focus_topic: Optional[str] = ""
 
 class NewsItem(BaseModel):
     id: str
@@ -234,9 +235,24 @@ async def generate_content(request: GenerateRequest):
             }
 
         elif request.content_type == "deep_dive":
-            content = await generator.generate_deep_dive(selected_news)
+            content = await generator.generate_deep_dive(
+                selected_news,
+                focus_topic=request.focus_topic or ""
+            )
             return {
                 "type": "deep_dive",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "ppt":
+            content = await generator.generate_ppt(
+                selected_news,
+                focus_topic=request.focus_topic or ""
+            )
+            return {
+                "type": "ppt",
                 "content": content,
                 "word_count": len(content),
                 "generated_at": datetime.now().isoformat()
@@ -298,8 +314,8 @@ async def get_status():
             "stream_script": True,
             "article": True,
             "deep_dive": True,
-            "ppt": False,  # 待开发
-            "infographic": False  # 待开发
+            "ppt": True,
+            "infographic": False
         }
     }
 
