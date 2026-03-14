@@ -144,7 +144,7 @@ class NewsFetcher:
             except Exception as e:
                 print(f"CLS next data parse error: {e}")
 
-        """解析财联社电报"""
+        # 解析财联社电报
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
