@@ -26,6 +26,7 @@ ENV/
 output/
 *.pptx
 *.txt
+!requirements.txt
 *.md
 !README.md
 
