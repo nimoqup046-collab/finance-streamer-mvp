@@ -7,13 +7,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 基础工具
+def _parse_bool(value: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "y", "on")
+
 # AI 提供商配置
-AI_PROVIDER = os.getenv("AI_PROVIDER", "doubao")  # doubao / anthropic / openai
+AI_PROVIDER = os.getenv("AI_PROVIDER", "doubao").lower()  # doubao / anthropic / openai
 
 # 豆包配置
 DOUBAO_API_KEY = os.getenv("DOUBAO_API_KEY", "")
 DOUBAO_API_BASE = os.getenv("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")
-DOUBAO_MODEL = os.getenv("DOUBAO_MODEL", "doubao-seedream-4-5-251128")
+DOUBAO_ENDPOINT_ID = os.getenv("DOUBAO_ENDPOINT_ID", "")
+DOUBAO_MODEL = os.getenv("DOUBAO_MODEL", "doubao-1-5-pro-32k-250115")
 
 # Anthropic Claude 配置 (Sonnet 4.6)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -36,7 +43,8 @@ elif AI_PROVIDER == "openai":
 else:  # 默认豆包
     AI_API_KEY = DOUBAO_API_KEY
     AI_API_BASE = DOUBAO_API_BASE
-    AI_MODEL = DOUBAO_MODEL
+    # 方舟控制台里的 Endpoint ID 优先，其次才是基础模型名
+    AI_MODEL = DOUBAO_ENDPOINT_ID or DOUBAO_MODEL
 
 # 服务配置
 PORT = int(os.getenv("PORT", 8000))
@@ -47,3 +55,4 @@ API_KEY = os.getenv("API_KEY", "")
 
 # 新闻缓存时间（分钟）
 NEWS_CACHE_MINUTES = int(os.getenv("NEWS_CACHE_MINUTES", "30"))
+USE_MOCK_NEWS = _parse_bool(os.getenv("USE_MOCK_NEWS"), False)

@@ -2,6 +2,7 @@
 财经主播助手 MVP 版本
 FastAPI 主入口
 """
+import asyncio
 import sys
 import os
 import logging
@@ -10,14 +11,20 @@ from pathlib import Path
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
-from backend.config import CORS_ORIGINS, PORT, API_KEY
+from backend.config import (
+    CORS_ORIGINS,
+    PORT,
+    API_KEY,
+    NEWS_CACHE_MINUTES,
+    USE_MOCK_NEWS,
+)
 from backend.fetcher import fetcher
 from backend.generator import generator
 
@@ -67,6 +74,51 @@ class NewsItem(BaseModel):
 # 内存存储（MVP版本够用）
 news_cache: List[dict] = []
 cache_time: datetime = None
+fallback_used_last_fetch: bool = False
+_cache_lock: asyncio.Lock = None
+
+
+def _get_cache_lock() -> asyncio.Lock:
+    """延迟初始化 asyncio.Lock（需在事件循环启动后创建）"""
+    global _cache_lock
+    if _cache_lock is None:
+        _cache_lock = asyncio.Lock()
+    return _cache_lock
+
+
+async def refresh_news_cache(force: bool = False) -> List[dict]:
+    """在生成前兜底刷新缓存，避免多实例下缓存丢失（加锁防并发重复抓取）"""
+    global news_cache, cache_time, fallback_used_last_fetch
+
+    if not force and news_cache and cache_time:
+        cache_age = (datetime.now() - cache_time).total_seconds()
+        if cache_age < NEWS_CACHE_MINUTES * 60:
+            return news_cache
+
+    async with _get_cache_lock():
+        # 再次检查，防止并发情况下重复抓取
+        if not force and news_cache and cache_time:
+            cache_age = (datetime.now() - cache_time).total_seconds()
+            if cache_age < NEWS_CACHE_MINUTES * 60:
+                return news_cache
+
+        fallback_used = False
+        if USE_MOCK_NEWS:
+            news_list = await fetcher.fetch_mock_news()
+            fallback_used = True
+        else:
+            try:
+                news_list = await fetcher.fetch_all_news()
+                if not news_list:
+                    raise RuntimeError("未获取到新闻")
+            except Exception:
+                news_list = await fetcher.fetch_mock_news()
+                fallback_used = True
+
+        news_cache = news_list
+        cache_time = datetime.now()
+        fallback_used_last_fetch = fallback_used
+    return news_cache
 
 # 健康检查
 @app.get("/health")
@@ -82,12 +134,12 @@ async def health_check():
 @app.get("/api/news")
 async def get_news(refresh: bool = False):
     """获取今日财经新闻"""
-    global news_cache, cache_time
+    global news_cache, cache_time, fallback_used_last_fetch
 
     # 检查缓存
-    if not refresh and news_cache:
-        cache_age = (datetime.now() - cache_time).seconds
-        if cache_age < 1800:  # 30分钟内有效
+    if not refresh and news_cache and cache_time:
+        cache_age = (datetime.now() - cache_time).total_seconds()
+        if cache_age < NEWS_CACHE_MINUTES * 60:
             return {
                 "data": news_cache,
                 "count": len(news_cache),
@@ -97,18 +149,14 @@ async def get_news(refresh: bool = False):
 
     # 获取新新闻
     try:
-        # MVP版本先用模拟数据
-        news_list = await fetcher.fetch_mock_news()
-        # 真实环境使用下面这行：
-        # news_list = await fetcher.fetch_all_news()
-
-        news_cache = news_list
-        cache_time = datetime.now()
+        await refresh_news_cache(force=True)
+        fallback_used = fallback_used_last_fetch
 
         return {
             "data": news_cache,
             "count": len(news_cache),
             "cached": False,
+            "fallback": fallback_used,
             "update_time": cache_time.isoformat()
         }
     except Exception as e:
@@ -124,14 +172,38 @@ async def get_categories():
         "sources": ["东方财富网", "新浪财经", "财联社"]
     }
 
+
+# 搜索新闻
+@app.get("/api/news/search")
+async def search_news(q: str = Query(..., min_length=1, description="搜索关键词")):
+    """按关键词搜索当前缓存的新闻"""
+    if not news_cache:
+        await refresh_news_cache()
+
+    keyword = q.strip().lower()
+    matched = [
+        n for n in news_cache
+        if keyword in n.get("title", "").lower()
+        or keyword in n.get("category", "").lower()
+        or keyword in n.get("source", "").lower()
+    ]
+    return {"data": matched, "count": len(matched), "keyword": q}
+
 # 生成内容
 @app.post("/api/generate", dependencies=[Depends(verify_api_key)])
 async def generate_content(request: GenerateRequest):
     """生成指定类型的内容"""
     global news_cache
 
+    if not news_cache:
+        await refresh_news_cache()
+
     # 根据ID筛选新闻
     selected_news = [n for n in news_cache if n["id"] in request.news_ids]
+
+    if not selected_news:
+        await refresh_news_cache(force=True)
+        selected_news = [n for n in news_cache if n["id"] in request.news_ids]
 
     if not selected_news:
         raise HTTPException(status_code=400, detail="未找到选中的新闻")
@@ -181,20 +253,32 @@ async def generate_content(request: GenerateRequest):
 
 # 批量生成（一键生成全部）
 @app.post("/api/generate/all", dependencies=[Depends(verify_api_key)])
-async def generate_all(news_ids: List[str]):
+async def generate_all(news_ids: List[str] = Body(...)):
     """一键生成所有类型的内容"""
     global news_cache
 
+    if not news_cache:
+        await refresh_news_cache()
+
     selected_news = [n for n in news_cache if n["id"] in news_ids]
+
+    if not selected_news:
+        await refresh_news_cache(force=True)
+        selected_news = [n for n in news_cache if n["id"] in news_ids]
 
     if not selected_news:
         raise HTTPException(status_code=400, detail="未找到选中的新闻")
 
     try:
+        stream_script, article, deep_dive = await asyncio.gather(
+            generator.generate_stream_script(selected_news),
+            generator.generate_article(selected_news),
+            generator.generate_deep_dive(selected_news),
+        )
         results = {
-            "stream_script": await generator.generate_stream_script(selected_news),
-            "article": await generator.generate_article(selected_news),
-            "deep_dive": await generator.generate_deep_dive(selected_news),
+            "stream_script": stream_script,
+            "article": article,
+            "deep_dive": deep_dive,
             "generated_at": datetime.now().isoformat()
         }
         return results

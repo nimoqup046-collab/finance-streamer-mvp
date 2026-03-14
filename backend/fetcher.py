@@ -3,11 +3,16 @@
 参考 https://github.com/cxyo/xw 项目
 """
 import asyncio
+import hashlib
 import aiohttp
-from datetime import datetime, timedelta
+import json
+import logging
+import re
+from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict
-import json
+
+logger = logging.getLogger(__name__)
 
 # 新闻源配置
 NEWS_SOURCES = {
@@ -50,7 +55,7 @@ class NewsFetcher:
             async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return await response.text(errors="ignore")
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            logger.warning("Error fetching %s: %s", url, e)
             return ""
 
     def parse_eastmoney(self, html: str) -> List[Dict]:
@@ -76,7 +81,7 @@ class NewsFetcher:
             title_elem = item.select_one("a")
             if title_elem and title_elem.get("href"):
                 title = title_elem.get_text(strip=True)
-                if len(title) > 10 and "股市" in title or "A股" in title or "央行" in title or "板块" in title:
+                if len(title) > 10 and any(keyword in title for keyword in ("股市", "A股", "央行", "板块")):
                     news_list.append({
                         "title": title,
                         "source": "东方财富网",
@@ -108,7 +113,43 @@ class NewsFetcher:
         return news_list
 
     def parse_cls(self, html: str) -> List[Dict]:
-        """解析财联社电报"""
+        """解析财联社电报（优先读取 Next.js 内嵌数据）"""
+        next_data_match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            html,
+            re.DOTALL
+        )
+        if next_data_match:
+            try:
+                next_data = json.loads(next_data_match.group(1))
+                telegraph_items = (
+                    next_data.get("props", {})
+                    .get("initialState", {})
+                    .get("telegraph", {})
+                    .get("telegraphList", [])
+                )
+                parsed_items = []
+                for item in telegraph_items[:30]:
+                    title = self._clean_cls_text(item.get("title") or item.get("content", ""))
+                    if len(title) < 10:
+                        continue
+
+                    detail_url = item.get("share_url") or item.get("url") or ""
+                    if detail_url and detail_url.startswith("/"):
+                        detail_url = f"https://www.cls.cn{detail_url}"
+
+                    parsed_items.append({
+                        "title": title,
+                        "source": "财联社",
+                        "url": detail_url,
+                        "time": self._format_cls_time(item.get("ctime") or item.get("created_at"))
+                    })
+                if parsed_items:
+                    return parsed_items
+            except Exception as e:
+                logger.warning("CLS next data parse error: %s", e)
+
+        # 解析财联社电报
         news_list = []
         soup = BeautifulSoup(html, "lxml")
 
@@ -130,42 +171,82 @@ class NewsFetcher:
 
         return news_list
 
+    def _clean_cls_text(self, text: str) -> str:
+        """清理财联社正文中的 HTML 标记"""
+        return BeautifulSoup(text or "", "lxml").get_text(" ", strip=True)
+
+    def _format_cls_time(self, raw_time) -> str:
+        """兼容财联社不同时间字段格式"""
+        if not raw_time:
+            return datetime.now().strftime("%H:%M")
+
+        raw_time = str(raw_time).strip()
+        if raw_time.isdigit():
+            timestamp = int(raw_time)
+            if timestamp > 10**12:
+                timestamp = timestamp / 1000
+            try:
+                return datetime.fromtimestamp(timestamp).strftime("%H:%M")
+            except (OverflowError, ValueError):
+                return datetime.now().strftime("%H:%M")
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%H:%M:%S", "%H:%M"):
+            try:
+                return datetime.strptime(raw_time, fmt).strftime("%H:%M")
+            except ValueError:
+                continue
+
+        return raw_time[:5] if len(raw_time) >= 5 else datetime.now().strftime("%H:%M")
+
+    async def _fetch_source(self, session: aiohttp.ClientSession, source_key: str) -> List[Dict]:
+        """获取单个新闻源"""
+        source = NEWS_SOURCES[source_key]
+        try:
+            html = await self.fetch_url(session, source["url"])
+            if not html:
+                return []
+            parse_fn = getattr(self, f"parse_{source_key}")
+            return parse_fn(html)
+        except Exception as e:
+            logger.warning("%s fetch error: %s", source_key, e)
+            return []
+
     async def fetch_all_news(self) -> List[Dict]:
-        """从所有源获取新闻"""
+        """从所有源并发获取新闻"""
         all_news = []
 
         async with aiohttp.ClientSession() as session:
-            # 东方财富网
-            try:
-                html = await self.fetch_url(session, NEWS_SOURCES["eastmoney"]["url"])
-                if html:
-                    news = self.parse_eastmoney(html)
-                    all_news.extend(news)
-            except Exception as e:
-                print(f"Eastmoney error: {e}")
+            results = await asyncio.gather(
+                self._fetch_source(session, "cls"),
+                self._fetch_source(session, "eastmoney"),
+                self._fetch_source(session, "sina"),
+                return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, list):
+                    all_news.extend(r)
+                elif isinstance(r, Exception):
+                    logger.warning("Source fetch raised: %s", r)
 
-            # 新浪财经
-            try:
-                html = await self.fetch_url(session, NEWS_SOURCES["sina"]["url"])
-                if html:
-                    news = self.parse_sina(html)
-                    all_news.extend(news)
-            except Exception as e:
-                print(f"Sina error: {e}")
+        if not all_news:
+            raise RuntimeError("所有新闻源均未返回有效内容")
 
-        # 去重
-        seen_titles = set()
+        # 去重（按标题前20字符）
+        seen_titles: set = set()
         unique_news = []
         for news in all_news:
-            title_key = news["title"][:20]  # 用前20个字符去重
+            title_key = news["title"][:20]
             if title_key not in seen_titles:
                 seen_titles.add(title_key)
                 unique_news.append(news)
 
-        # 添加分类标签
+        # 添加分类标签和稳定 ID
         for news in unique_news:
             news["category"] = self._categorize_news(news["title"])
-            news["id"] = f"{news['source']}_{hash(news['title']) % 10000}"
+            stable_hash = hashlib.md5(
+                f"{news['source']}:{news['title']}".encode()
+            ).hexdigest()[:8]
+            news["id"] = f"{news['source']}_{stable_hash}"
 
         return unique_news[:50]  # 返回最新50条
 

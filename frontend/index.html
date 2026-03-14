@@ -18,6 +18,9 @@
                     <button @click="toggleHistory" :class="['btn-icon', { active: showHistory }]">
                         🕐 历史 <span v-if="history.length > 0" class="badge">{{ history.length }}</span>
                     </button>
+                    <button @click="showSettings = true" class="btn-icon" title="设置">
+                        ⚙️ 设置
+                    </button>
                     <button @click="refreshNews" class="btn-icon" :disabled="loading">
                         <span :class="{ spinning: loading }">🔄</span> 刷新
                     </button>
@@ -132,6 +135,13 @@
                                     <span class="source">{{ item.source }}</span>
                                     <span class="news-time">{{ item.time }}</span>
                                     <span class="category" :data-category="item.category">{{ item.category }}</span>
+                                    <a
+                                        v-if="item.url"
+                                        :href="item.url"
+                                        target="_blank"
+                                        class="news-link"
+                                        @click.stop
+                                    >原文 ↗</a>
                                 </div>
                             </div>
                             <button
@@ -318,12 +328,55 @@
             </div>
         </main>
 
+        <!-- 设置面板 -->
+        <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>⚙️ 生成设置</h3>
+                    <button @click="showSettings = false" class="btn-close-modal">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>API Key（可选）</label>
+                        <input
+                            type="password"
+                            v-model="apiKey"
+                            placeholder="X-API-Key"
+                            class="form-input"
+                        >
+                        <p class="form-hint">仅在后端设置了 API_KEY 环境变量时需要填写</p>
+                    </div>
+                    <div class="form-group">
+                        <label>默认直播时长</label>
+                        <select v-model="duration" class="form-input">
+                            <option :value="15">15 分钟</option>
+                            <option :value="30">30 分钟</option>
+                            <option :value="60">60 分钟</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>默认写作风格</label>
+                        <select v-model="style" class="form-input">
+                            <option value="专业">专业</option>
+                            <option value="轻松">轻松</option>
+                            <option value="解读型">解读型</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button @click="saveSettings" class="btn btn-primary">保存设置</button>
+                    <button @click="showSettings = false" class="btn">取消</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast提示 -->
         <transition name="fade">
             <div v-if="showToast" class="toast" :class="toastType">{{ toastMessage }}</div>
         </transition>
     </div>
 
+    <script src="config.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

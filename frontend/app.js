@@ -1,9 +1,20 @@
 // 财经主播助手 MVP - 前端逻辑
 const { createApp } = Vue;
 
-const API_BASE = window.location.hostname === 'localhost'
+const DEFAULT_API_BASE = window.location.hostname === 'localhost'
     ? 'http://localhost:8000'
     : window.location.origin;
+const API_BASE = (window.API_BASE && String(window.API_BASE).trim())
+    ? String(window.API_BASE).replace(/\/+$/, '')
+    : DEFAULT_API_BASE;
+
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem('finance_streamer_settings');
+        if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return { duration: 30, style: '专业', apiKey: '' };
+}
 
 const PROGRESS_STEPS = [
     { text: '分析新闻内容...', tip: '正在提取关键信息和数据要点' },
@@ -14,6 +25,7 @@ const PROGRESS_STEPS = [
 
 createApp({
     data() {
+        const settings = loadSettings();
         return {
             // 新闻数据
             news: [],
@@ -29,8 +41,10 @@ createApp({
             showFavoritesOnly: false,
 
             // 生成参数
-            duration: 30,
-            style: '专业',
+            duration: settings.duration || 30,
+            style: settings.style || '专业',
+            apiKey: settings.apiKey || '',
+            showSettings: false,
             styleOptions: ['专业', '轻松', '解读型'],
             durationOptions: [15, 30, 60],
 
@@ -88,7 +102,11 @@ createApp({
             }
             if (this.searchQuery.trim()) {
                 const q = this.searchQuery.trim().toLowerCase();
-                list = list.filter(n => n.title.toLowerCase().includes(q));
+                list = list.filter(n =>
+                    n.title.toLowerCase().includes(q) ||
+                    (n.category || '').toLowerCase().includes(q) ||
+                    (n.source || '').toLowerCase().includes(q)
+                );
             }
             return list;
         },
@@ -134,6 +152,30 @@ createApp({
     },
 
     methods: {
+        buildHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            if (this.apiKey) {
+                headers['X-API-Key'] = this.apiKey;
+            }
+            return headers;
+        },
+
+        saveSettings() {
+            try {
+                localStorage.setItem('finance_streamer_settings', JSON.stringify({
+                    duration: this.duration,
+                    style: this.style,
+                    apiKey: this.apiKey,
+                }));
+                this.showToastMessage('设置已保存', 'success');
+            } catch (error) {
+                console.error('保存设置失败:', error);
+                this.showToastMessage('保存设置失败', 'error');
+            } finally {
+                this.showSettings = false;
+            }
+        },
+
         // 更新时间
         updateTime() {
             const now = new Date();
@@ -157,7 +199,8 @@ createApp({
                     if (!refresh && data.cached) {
                         this.showToastMessage(`已加载缓存数据 (${data.count}条)`, 'info');
                     } else {
-                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻`, 'success');
+                        const fallbackNote = data.fallback ? '（模拟数据）' : '';
+                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻${fallbackNote}`, 'success');
                     }
                 }
             } catch (error) {
@@ -287,7 +330,7 @@ createApp({
             try {
                 const response = await fetch(`${API_BASE}/api/generate`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: this.buildHeaders(),
                     body: JSON.stringify({
                         news_ids: this.selectedNews,
                         content_type: type,
@@ -296,10 +339,15 @@ createApp({
                     }),
                 });
 
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
                 const data = await response.json();
 
-                if (data.content || data.data) {
-                    this.result = data.content || data;
+                if (data.content !== undefined || data.titles) {
+                    this.result = type === 'article' ? data : (data.content || data);
                     this.saveToHistory(type, this.result);
                     this.showToastMessage('✅ 生成成功！', 'success');
                 } else {
@@ -330,9 +378,14 @@ createApp({
             try {
                 const response = await fetch(`${API_BASE}/api/generate/all`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: this.buildHeaders(),
                     body: JSON.stringify(this.selectedNews),
                 });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
 
                 const data = await response.json();
                 this.allResults = data;
