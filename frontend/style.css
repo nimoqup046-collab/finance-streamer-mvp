@@ -813,6 +813,9 @@ body {
 .gen-ppt     { border-color: #f9a8d4; }
 .gen-ppt:hover:not(:disabled)     { border-color: #ec4899; background: #fdf2f8; }
 
+.gen-flash   { border-color: #fbbf24; }
+.gen-flash:hover:not(:disabled)   { border-color: #f59e0b; background: #fffbeb; }
+
 .gen-all {
     grid-column: 1 / -1;
     border-color: #fcd34d;

@@ -145,6 +145,25 @@ MOMENTS_COPY_SYSTEM_PROMPT = """你是一位顶级新媒体运营官，专注为
 "有一个数据，看懂的人都在默默加仓。晚8点，等你来。"
 """
 
+FLASH_REPORT_SYSTEM_PROMPT = """你是一位擅长写“快报速评”的财经编辑。
+
+【写作目标】
+- 让读者在30秒内抓住当天最重要的财经信号
+- 不是罗列新闻，而是快速提炼“发生了什么、为什么重要、普通人该怎么理解”
+- 适合直接发微博、朋友圈、公众号短内容或投研群简报
+
+【表达原则】
+- 短句、高密度、强判断
+- 不写空话，不写套话
+- 读完后能马上复述给别人
+
+【强制要求】
+- 开头先给一句最重要判断
+- 每条要点都要讲“所以呢”
+- 至少有一个反直觉洞察
+- 结尾给一句可截图传播的短金句
+"""
+
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
 
 QUALITY_CONTROL_RULES = """
@@ -569,6 +588,66 @@ class ContentGenerator:
         except Exception as e:
             logger.error("Article generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_article(news_items)
+
+    async def generate_flash_report(self, news_items: List[Dict], focus_topic: str = "") -> str:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份可直接发布的财经快报速评，帮助读者30秒抓住主线和判断",
+            style="洞察",
+        )
+        thesis = editorial_brief.get("thesis", editorial_brief.get("lead_angle", ""))
+        contrarian_take = editorial_brief.get("contrarian_take", "")
+        verification_signals = "\n".join(f"- {item}" for item in editorial_brief.get("verification_signals", []))
+        takeaways = "\n".join(f"- {item}" for item in editorial_brief.get("audience_takeaways", []))
+        news_details = "\n".join([
+            f"{i+1}. 【{n.get('category', '财经')}】{n['title']}（{n['source']}）"
+            for i, n in enumerate(news_items[:5])
+        ])
+
+        prompt = f"""【快报速评任务】
+请输出一篇适合社媒/群发/早会速读的财经快报速评。
+
+{QUALITY_CONTROL_RULES.strip()}
+
+【一句最硬的结论】
+{thesis}
+
+【反直觉判断】
+{contrarian_take or '真正重要的不是表面热度，而是主线是否开始被重新定价。'}
+
+【素材新闻】
+{news_details}
+
+【普通读者最该带走的结论】
+{takeaways or '- 暂无额外补充'}
+
+【接下来最该盯的验证指标】
+{verification_signals or '- 暂无额外补充'}
+
+【输出结构】
+1. 开头：1句话直接给最重要判断
+2. 速评主体：按3-5个短段落写，每段都要说“这意味着什么”
+3. 结尾：一句短金句 + 1个下一步验证点
+
+【硬性要求】
+- 总字数控制在350-500字
+- 至少出现2个具体数字或时间点
+- 不能写成摘要拼盘
+- 不能使用“建议关注 / 需要观察 / 影响深远”之类空话
+- 结尾金句不超过18字，能被截图传播
+
+请直接输出快报速评正文，不要解释：
+"""
+        try:
+            response = await self._call_ai(
+                prompt,
+                max_tokens=1200,
+                system_prompt=FLASH_REPORT_SYSTEM_PROMPT,
+            )
+            return self._clean_generated_text(response)
+        except Exception as e:
+            logger.error("Flash report generation error: %s | %s", e, self._error_context())
+            return self._generate_fallback_flash_report(news_items)
 
     async def _analyze_news_outline(self, news_items: List[Dict], focus_topic: str, date_str: str) -> str:
         news_details = "\n".join([f"• {n['title']}（{n['source']}）" for n in news_items[:6]])
@@ -1151,6 +1230,22 @@ N+4. 记忆点与先行指标
         content += "## 核心判断\n\n把今天这些消息放在一起看，市场真正变化的是主线和预期差，而不只是热闹本身。\n\n"
         content += "*本文内容仅供参考，不构成投资建议。*\n"
         return {"titles": titles, "content": content, "html": self._markdown_to_html(content)}
+
+    def _generate_fallback_flash_report(self, news_items: List[Dict]) -> str:
+        lead = news_items[0] if news_items else {"title": "今日财经主线出现新变化", "source": "系统"}
+        lines = [
+            f"今天最重要的判断是：{lead['title'][:28]}，真正值得看的不是新闻热度，而是它背后的主线变化。",
+            "",
+        ]
+        for news in news_items[:4]:
+            lines.append(
+                f"【{news.get('category', '财经')}】{news['title']}\n"
+                f"这条消息来自{news['source']}，表面上是一条事件新闻，真正重要的是它会改变市场对后续节奏和验证指标的判断。"
+            )
+            lines.append("")
+        lines.append("一句话总结：看主线，不要只看热闹。")
+        lines.append("下一步重点看：政策跟进、资金连续性和基本面验证。")
+        return "\n".join(lines)
 
     def _generate_fallback_deep_dive(self, news_items: List[Dict]) -> str:
         topic = news_items[0]['title']

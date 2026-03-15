@@ -68,7 +68,7 @@ class PersonaConfig(BaseModel):
 
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive, ppt_script, all
+    content_type: str  # stream_script, article, deep_dive, ppt_script, flash_report, all
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
@@ -347,6 +347,18 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
+        if requested_type == "flash_report":
+            content = await generator.generate_flash_report(
+                selected_news,
+                focus_topic=request.focus_topic or request.title or "",
+            )
+            return {
+                "type": "flash_report",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
         raise HTTPException(status_code=400, detail="不支持的内容类型")
 
     except HTTPException:
@@ -575,6 +587,7 @@ async def get_status():
             "compliance_check": True,    # 核心壁垒 1：财经风控合规 Agent
             "persona_injection": True,   # 核心壁垒 2：主播人设/IP记忆库
             "content_matrix": True,      # 核心壁垒 3：一键内容矩阵
+            "flash_report": True,
             "infographic": False  # 待开发
         }
     }
