@@ -61,6 +61,11 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="无效的API密钥")
 
 # 请求模型
+class PersonaConfig(BaseModel):
+    invest_style: Optional[str] = ""   # 投资流派/人设，如"价值投资派"
+    catchphrases: Optional[str] = ""   # 标志性口头禅，如"跟着资金走，别跟着情绪走"
+    ip_desc: Optional[str] = ""        # 主播个人标签/风格描述
+
 class GenerateRequest(BaseModel):
     news_ids: List[str]
     content_type: str  # stream_script, article, deep_dive, ppt_script, all
@@ -68,6 +73,18 @@ class GenerateRequest(BaseModel):
     style: Optional[str] = "专业"
     title: Optional[str] = ""
     focus_topic: Optional[str] = ""
+    persona: Optional[PersonaConfig] = None  # 主播人设/IP记忆库
+
+class ComplianceRequest(BaseModel):
+    content: str
+
+class MatrixRequest(BaseModel):
+    news_ids: List[str]
+    focus_topic: Optional[str] = ""
+    duration: Optional[int] = 30
+    style: Optional[str] = "专业"
+    live_time: Optional[str] = ""      # 直播时间，如"20"表示晚8点
+    persona: Optional[PersonaConfig] = None
 
 class NewsItem(BaseModel):
     id: str
@@ -281,7 +298,8 @@ async def generate_content(request: GenerateRequest):
             content = await generator.generate_stream_script(
                 selected_news,
                 duration=request.duration or 30,
-                style=request.style or "专业"
+                style=request.style or "专业",
+                persona=request.persona.model_dump() if request.persona else None,
             )
             return {
                 "type": "stream_script",
@@ -295,6 +313,7 @@ async def generate_content(request: GenerateRequest):
                 selected_news,
                 title=request.title or "",
                 focus_topic=request.focus_topic or "",
+                persona=request.persona.model_dump() if request.persona else None,
             )
             return {
                 "type": "article",
@@ -306,6 +325,7 @@ async def generate_content(request: GenerateRequest):
             content = await generator.generate_deep_dive(
                 selected_news,
                 focus_topic=request.focus_topic or "",
+                persona=request.persona.model_dump() if request.persona else None,
             )
             return {
                 "type": "deep_dive",
@@ -318,6 +338,7 @@ async def generate_content(request: GenerateRequest):
             content = await generator.generate_ppt_script(
                 selected_news,
                 focus_topic=request.focus_topic or request.title or "",
+                persona=request.persona.model_dump() if request.persona else None,
             )
             return {
                 "type": "ppt_script",
@@ -359,6 +380,40 @@ async def generate_all(news_ids: List[str] = Body(...)):
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
 
+# 合规审核（核心壁垒 1）
+@app.post("/api/compliance/check", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
+async def compliance_check(req: ComplianceRequest):
+    """对已生成内容进行财经合规审核，返回风险报告和改写版本。"""
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="内容不能为空")
+    try:
+        result = await generator.compliance_review(req.content)
+        return {**result, "checked_at": datetime.now().isoformat()}
+    except Exception as e:
+        logger.error("合规审核失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="合规审核失败，请稍后重试")
+
+
+# 一键内容矩阵（核心壁垒 3）
+@app.post("/api/generate/matrix", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
+async def generate_matrix(req: MatrixRequest):
+    """一键生成完整内容矩阵：朋友圈预热 + 直播稿 + 复盘文章 + PPT脚本。"""
+    selected_news = await _resolve_selected_news(req.news_ids)
+    try:
+        result = await generator.generate_content_matrix(
+            selected_news,
+            focus_topic=req.focus_topic or "",
+            duration=req.duration or 30,
+            style=req.style or "专业",
+            live_time=req.live_time or "",
+            persona=req.persona.model_dump() if req.persona else None,
+        )
+        return result
+    except Exception as e:
+        logger.error("内容矩阵生成失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="内容矩阵生成失败，请稍后重试")
+
+
 @app.post("/api/generate/ppt", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_ppt(news_ids: List[str] = Body(...)):
     """根据选中新闻生成 PPT 并返回下载流。"""
@@ -389,6 +444,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
 
     async def event_stream():
         started = time.monotonic()
+        persona_dict = payload.persona.model_dump() if payload.persona else None
         logger.info("SSE generation started type=%s news_count=%s", requested_type, len(selected_news))
         try:
             yield _sse("status", {"step": 0, "text": "准备生成", "tip": "正在校验新闻与参数"})
@@ -400,18 +456,21 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         selected_news,
                         title=payload.title or "",
                         focus_topic=payload.focus_topic or "",
+                        persona=persona_dict,
                     )
                 )
                 deep_task = asyncio.create_task(
                     generator.generate_deep_dive(
                         selected_news,
                         focus_topic=payload.focus_topic or "",
+                        persona=persona_dict,
                     )
                 )
                 ppt_script_task = asyncio.create_task(
                     generator.generate_ppt_script(
                         selected_news,
                         focus_topic=payload.focus_topic or payload.title or "",
+                        persona=persona_dict,
                     )
                 )
 
@@ -420,6 +479,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                     selected_news,
                     duration=payload.duration or 30,
                     style=payload.style or "专业",
+                    persona=persona_dict,
                 ):
                     if await request.is_disconnected():
                         logger.info("SSE client disconnected during all-generation stream")
@@ -456,6 +516,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         selected_news,
                         duration=payload.duration or 30,
                         style=payload.style or "专业",
+                        persona=persona_dict,
                     ):
                         if await request.is_disconnected():
                             logger.info("SSE client disconnected during stream_script")
@@ -469,16 +530,19 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         selected_news,
                         title=payload.title or "",
                         focus_topic=payload.focus_topic or "",
+                        persona=persona_dict,
                     )
                 elif requested_type == "deep_dive":
                     result = await generator.generate_deep_dive(
                         selected_news,
                         focus_topic=payload.focus_topic or "",
+                        persona=persona_dict,
                     )
                 elif requested_type == "ppt_script":
                     result = await generator.generate_ppt_script(
                         selected_news,
                         focus_topic=payload.focus_topic or payload.title or "",
+                        persona=persona_dict,
                     )
                 else:
                     raise HTTPException(status_code=400, detail="不支持的流式内容类型")
@@ -508,6 +572,9 @@ async def get_status():
             "deep_dive": True,
             "ppt": True,
             "ppt_script": True,
+            "compliance_check": True,    # 核心壁垒 1：财经风控合规 Agent
+            "persona_injection": True,   # 核心壁垒 2：主播人设/IP记忆库
+            "content_matrix": True,      # 核心壁垒 3：一键内容矩阵
             "infographic": False  # 待开发
         }
     }
