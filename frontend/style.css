@@ -813,6 +813,57 @@ body {
 .gen-ppt     { border-color: #f9a8d4; }
 .gen-ppt:hover:not(:disabled)     { border-color: #ec4899; background: #fdf2f8; }
 
+.gen-flash   { border-color: #fbbf24; }
+.gen-flash:hover:not(:disabled)   { border-color: #f59e0b; background: #fffbeb; }
+
+.signals-panel {
+    margin-top: 12px;
+    border: 1px dashed #d1d5db;
+    border-radius: 8px;
+    padding: 12px;
+    background: #f9fafb;
+}
+
+.btn-signals {
+    width: 100%;
+    padding: 8px 16px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    color: #1d4ed8;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-signals:hover:not(:disabled) {
+    background: #dbeafe;
+}
+
+.btn-signals:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.signals-result {
+    margin-top: 10px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.signals-text {
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    color: #374151;
+    font-family: inherit;
+}
+
 .gen-all {
     grid-column: 1 / -1;
     border-color: #fcd34d;

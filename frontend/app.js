@@ -89,7 +89,12 @@ createApp({
                 { key: 'article', label: '📱 公众号' },
                 { key: 'deep_dive', label: '📄 深度长文' },
                 { key: 'ppt', label: '🖥️ PPT脚本' },
+                { key: 'flash_report', label: '⚡ 快报速评' },
             ],
+
+            // 信号分析结果
+            newsSignals: null,
+            loadingSignals: false,
         };
     },
 
@@ -127,6 +132,7 @@ createApp({
                 article: '📱 公众号文章（深度好文版）',
                 deep_dive: '📄 深度长文（原创研究版）',
                 ppt: '🖥️ PPT演讲脚本',
+                flash_report: '⚡ 快报速评（社媒直发版）',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -415,6 +421,33 @@ createApp({
                 else if (tab === 'article') this.result = this.allResults.article;
                 else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
                 else if (tab === 'ppt') this.result = this.allResults.ppt;
+                else if (tab === 'flash_report') this.result = this.allResults.flash_report;
+            }
+        },
+
+        // 投资信号分析（Reportify RAG思路）
+        async analyzeSignals() {
+            if (this.selectedCount === 0) {
+                this.showToastMessage('请先选择新闻', 'warning');
+                return;
+            }
+            this.loadingSignals = true;
+            this.newsSignals = null;
+            try {
+                const response = await fetch(`${API_BASE}/api/news/score`, {
+                    method: 'POST',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify(this.selectedNews),
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                this.newsSignals = data.signals;
+                this.showToastMessage('✅ 信号分析完成', 'success');
+            } catch (error) {
+                console.error('信号分析失败:', error);
+                this.showToastMessage('❌ 信号分析失败', 'error');
+            } finally {
+                this.loadingSignals = false;
             }
         },
 
@@ -485,6 +518,7 @@ createApp({
                 article: `公众号文章_${this.getDateTimeString()}.md`,
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
                 ppt: `PPT脚本_${this.getDateTimeString()}.md`,
+                flash_report: `快报速评_${this.getDateTimeString()}.txt`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -506,6 +540,7 @@ createApp({
                 article: '公众号文章',
                 deep_dive: '深度长文',
                 ppt: 'PPT脚本',
+                flash_report: '快报速评',
             };
             const text = typeof content === 'string'
                 ? content
