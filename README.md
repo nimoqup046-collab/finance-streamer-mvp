@@ -15,6 +15,7 @@
 | **📝 直播稿生成** | 基于“编辑部 brief + 主线判断”生成更适合口播的直播稿 |
 | **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文 |
 | **📄 深度长文** | 输出带框架、机会与风险并重的深度研判文章 |
+| **⚡ 快报速评** | 30秒读完的短内容速评，适合社媒直发和群内快读 |
 | **🚀 一键全部生成** | 四种格式**并行**生成，比逐个生成更省时 |
 | **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看四种结果 |
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
@@ -179,7 +180,7 @@ GET /api/news/search?q=关键词
 POST /api/generate
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report
   "duration": 30,
   "style": "专业"
 }

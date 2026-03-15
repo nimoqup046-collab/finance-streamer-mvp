@@ -63,7 +63,7 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 # 请求模型
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive, ppt_script, all
+    content_type: str  # stream_script, article, deep_dive, ppt_script, flash_report, all
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
@@ -326,6 +326,18 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
+        if requested_type == "flash_report":
+            content = await generator.generate_flash_report(
+                selected_news,
+                focus_topic=request.focus_topic or request.title or "",
+            )
+            return {
+                "type": "flash_report",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
         raise HTTPException(status_code=400, detail="不支持的内容类型")
 
     except HTTPException:
@@ -508,6 +520,7 @@ async def get_status():
             "deep_dive": True,
             "ppt": True,
             "ppt_script": True,
+            "flash_report": True,
             "infographic": False  # 待开发
         }
     }
