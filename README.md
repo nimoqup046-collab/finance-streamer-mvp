@@ -166,16 +166,18 @@ GET /api/news/search?q=关键词
 POST /api/generate
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script
   "duration": 30,
   "style": "专业"
 }
 ```
 
-### 一键全部生成（并行）
+### 一键全部生成（并行，返回 4 类结果）
 ```
 POST /api/generate/all
 ["id1", "id2"]
+
+// 返回: stream_script / article / deep_dive / ppt_script
 ```
 
 ### 流式生成（SSE）
@@ -183,13 +185,22 @@ POST /api/generate/all
 POST /api/generate/stream
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive | all
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | all
   "duration": 30,
   "style": "专业"
 }
 ```
 
-### 生成 PPT
+### 生成 PPT 脚本（文本结果）
+```
+POST /api/generate
+{
+  "news_ids": ["id1", "id2"],
+  "content_type": "ppt_script"
+}
+```
+
+### 生成 PPT 文件（.pptx 下载）
 ```
 POST /api/generate/ppt
 ["id1", "id2"]
@@ -207,7 +218,7 @@ GET /health
 - [ ] 信息图生成
 - [ ] 用户系统
 - [ ] 历史记录持久化升级（IndexedDB / 服务端同步）
-- [ ] 更多新闻源（证券时报、界面新闻等扩展源）
+- [ ] 更多新闻源（界面新闻、华尔街见闻等扩展源）
 - [ ] 更精细的流式输出（逐 token / 可中断恢复）
 
 ---
