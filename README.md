@@ -213,6 +213,13 @@ GET /health
 
 ---
 
+## 🧭 主线基底
+
+- 内容与工程主线说明：`/Users/ethan/Documents/dev/奇思妙想/finance-streamer-mvp/docs/claude-core-baseline.md`
+- 后续内容质量优化默认以 `PR #7` 为内容基底、以 `PR #8` 为整合基底、以 `PR #6` 为交互基底
+
+---
+
 ## 🎨 待开发功能
 
 - [ ] 信息图生成
