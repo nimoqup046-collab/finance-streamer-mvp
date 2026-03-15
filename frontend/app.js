@@ -13,7 +13,7 @@ function loadSettings() {
         const saved = localStorage.getItem('finance_streamer_settings');
         if (saved) return JSON.parse(saved);
     } catch (_) {}
-    return { duration: 30, style: '洞察', apiKey: '' };
+    return { duration: 30, style: '洞察', apiKey: '', persona: { invest_style: '', catchphrases: '', ip_desc: '' } };
 }
 
 const PROGRESS_STEPS = [
@@ -50,10 +50,14 @@ createApp({
             styleOptions: ['洞察', '解读型', '专业', '轻松'],
             durationOptions: [15, 30, 60],
 
+            // 主播人设/IP记忆库（核心壁垒 2）
+            persona: settings.persona || { invest_style: '', catchphrases: '', ip_desc: '' },
+
             // 状态
             loading: false,
             generating: false,
             generatingPpt: false,
+            checkingCompliance: false,
 
             // 进度步骤
             progressStep: 0,
@@ -65,7 +69,11 @@ createApp({
             result: null,
             resultType: '',
             allResults: null,
+            matrixResult: null,   // 内容矩阵结果（核心壁垒 3）
             activeResultTab: 'stream_script',
+
+            // 合规审核结果（核心壁垒 1）
+            complianceResult: null,
 
             // 在线编辑
             editingContent: false,
@@ -92,6 +100,14 @@ createApp({
                 { key: 'stream_script', label: '📝 直播稿' },
                 { key: 'article', label: '📱 公众号' },
                 { key: 'deep_dive', label: '📄 深度长文' },
+                { key: 'ppt_script', label: '🖥️ PPT脚本' },
+            ],
+
+            // 内容矩阵 Tab 配置（核心壁垒 3）
+            matrixTabs: [
+                { key: 'moments_copy', label: '📣 朋友圈预热' },
+                { key: 'stream_script', label: '📝 直播稿' },
+                { key: 'article', label: '📱 复盘文章' },
                 { key: 'ppt_script', label: '🖥️ PPT脚本' },
             ],
         };
@@ -128,9 +144,10 @@ createApp({
         resultTitle() {
             const titles = {
                 stream_script: '📝 直播稿（刘润×小Lin说融合风格）',
-                article: '📱 公众号文章（深度好文版）',
+                article: this.matrixResult ? '📱 复盘文章（盘后深度版）' : '📱 公众号文章（深度好文版）',
                 deep_dive: '📄 深度长文（原创研究版）',
                 ppt_script: '🖥️ PPT演讲脚本',
+                moments_copy: '📣 朋友圈预热文案（50字诱饵）',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -166,12 +183,19 @@ createApp({
             return headers;
         },
 
+        buildPersona() {
+            const { invest_style, catchphrases, ip_desc } = this.persona || {};
+            if (!invest_style && !catchphrases && !ip_desc) return null;
+            return { invest_style: invest_style || '', catchphrases: catchphrases || '', ip_desc: ip_desc || '' };
+        },
+
         saveSettings() {
             try {
                 localStorage.setItem('finance_streamer_settings', JSON.stringify({
                     duration: this.duration,
                     style: this.style,
                     apiKey: this.apiKey,
+                    persona: this.persona,
                 }));
                 this.showToastMessage('设置已保存', 'success');
             } catch (error) {
@@ -388,6 +412,7 @@ createApp({
                     content_type: type,
                     duration: this.duration,
                     style: this.style,
+                    persona: this.buildPersona(),
                 }),
             });
 
@@ -438,9 +463,11 @@ createApp({
             this.generating = true;
             this.result = null;
             this.allResults = null;
+            this.matrixResult = null;
             this.resultType = type;
             this.editingContent = false;
             this.streamingPreview = '';
+            this.complianceResult = null;
             this.startProgress();
 
             try {
@@ -451,6 +478,7 @@ createApp({
                             content_type: type,
                             duration: this.duration,
                             style: this.style,
+                            persona: this.buildPersona(),
                         },
                         {
                             status: (event) => {
@@ -504,8 +532,10 @@ createApp({
             this.generating = true;
             this.result = null;
             this.allResults = null;
+            this.matrixResult = null;
             this.editingContent = false;
             this.streamingPreview = '';
+            this.complianceResult = null;
             this.startProgress();
 
             try {
@@ -515,6 +545,7 @@ createApp({
                         content_type: 'all',
                         duration: this.duration,
                         style: this.style,
+                        persona: this.buildPersona(),
                     },
                     {
                         status: (event) => {
@@ -568,6 +599,124 @@ createApp({
                 this.generating = false;
                 this.stopProgress();
             }
+        },
+
+        // 一键内容矩阵（核心壁垒 3）
+        async generateMatrix() {
+            if (this.selectedCount === 0) {
+                this.showToastMessage('请先选择新闻', 'warning');
+                return;
+            }
+
+            this.generating = true;
+            this.result = null;
+            this.allResults = null;
+            this.matrixResult = null;
+            this.editingContent = false;
+            this.streamingPreview = '';
+            this.complianceResult = null;
+            this.startProgress();
+
+            try {
+                const response = await fetch(`${API_BASE}/api/generate/matrix`, {
+                    method: 'POST',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify({
+                        news_ids: this.selectedNews,
+                        focus_topic: '',
+                        duration: this.duration,
+                        style: this.style,
+                        persona: this.buildPersona(),
+                    }),
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                this.matrixResult = data;
+                this.activeResultTab = 'moments_copy';
+                this.resultType = 'moments_copy';
+                this.result = data.moments_copy || '';
+
+                // Save all matrix items to history
+                if (data.moments_copy) this.saveToHistory('moments_copy', data.moments_copy);
+                if (data.stream_script) this.saveToHistory('stream_script', data.stream_script);
+                if (data.article) this.saveToHistory('article', data.article);
+                if (data.ppt_script) this.saveToHistory('ppt_script', data.ppt_script);
+
+                this.showToastMessage('✅ 内容矩阵生成完成！', 'success');
+            } catch (error) {
+                console.error('内容矩阵生成失败:', error);
+                this.showToastMessage(`❌ 内容矩阵生成失败：${error.message}`, 'error');
+            } finally {
+                this.generating = false;
+                this.stopProgress();
+            }
+        },
+
+        // 切换内容矩阵 Tab
+        switchMatrixTab(tab) {
+            this.activeResultTab = tab;
+            this.resultType = tab;
+            this.editingContent = false;
+            if (this.matrixResult) {
+                if (tab === 'moments_copy') this.result = this.matrixResult.moments_copy;
+                else if (tab === 'stream_script') this.result = this.matrixResult.stream_script;
+                else if (tab === 'article') this.result = this.matrixResult.article;
+                else if (tab === 'ppt_script') this.result = this.matrixResult.ppt_script;
+            }
+        },
+
+        // 合规审核（核心壁垒 1）
+        async checkCompliance() {
+            const content = this.editingContent ? this.editableContent : this.displayContent;
+            if (!content || !content.trim()) {
+                this.showToastMessage('没有可审核的内容', 'warning');
+                return;
+            }
+
+            this.checkingCompliance = true;
+            this.complianceResult = null;
+            try {
+                const response = await fetch(`${API_BASE}/api/compliance/check`, {
+                    method: 'POST',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify({ content }),
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+
+                this.complianceResult = await response.json();
+                if (this.complianceResult.is_compliant) {
+                    this.showToastMessage('✅ 合规审核通过，未发现风险点', 'success');
+                } else {
+                    this.showToastMessage(`⚠️ 发现 ${this.complianceResult.issues.length} 处合规风险，请查看报告`, 'warning');
+                }
+            } catch (error) {
+                console.error('合规审核失败:', error);
+                this.showToastMessage(`❌ 合规审核失败：${error.message}`, 'error');
+            } finally {
+                this.checkingCompliance = false;
+            }
+        },
+
+        // 应用合规改写版本
+        applyRevisedContent() {
+            if (!this.complianceResult || !this.complianceResult.revised_content) return;
+            const revised = this.complianceResult.revised_content;
+            if (typeof this.result === 'string') {
+                this.result = revised;
+            } else if (this.result && this.result.content) {
+                this.result = { ...this.result, content: revised };
+            }
+            this.complianceResult = null;
+            this.showToastMessage('✅ 已应用合规改写版本', 'success');
         },
 
         async generatePpt() {
@@ -653,6 +802,8 @@ createApp({
         closeResult() {
             this.result = null;
             this.allResults = null;
+            this.matrixResult = null;
+            this.complianceResult = null;
             this.editingContent = false;
         },
 
@@ -696,6 +847,7 @@ createApp({
                 article: `公众号文章_${this.getDateTimeString()}.md`,
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
                 ppt_script: `PPT脚本_${this.getDateTimeString()}.md`,
+                moments_copy: `朋友圈预热_${this.getDateTimeString()}.txt`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -717,6 +869,7 @@ createApp({
                 article: '公众号文章',
                 deep_dive: '深度长文',
                 ppt_script: 'PPT脚本',
+                moments_copy: '朋友圈预热',
             };
             const text = typeof content === 'string'
                 ? content

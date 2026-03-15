@@ -1,8 +1,10 @@
 """
 AI内容生成模块 —— Claude Prompt 基底整合版
-支持生成：直播稿、公众号文章、深度长文、PPT脚本、PPTX 文件
+支持生成：直播稿、公众号文章、深度长文、PPT脚本、PPTX 文件、内容矩阵、朋友圈预热文案
 支持多种AI提供商：智谱、豆包、Anthropic Claude、OpenAI
+核心壁垒：财经风控合规 Agent、主播人设/IP记忆库、一键内容矩阵
 """
+import asyncio
 import io
 import json
 import logging
@@ -89,6 +91,60 @@ PPT_SYSTEM_PROMPT = """你是一位顶级商业演讲顾问，擅长把财经判
 - 可视化建议
 """
 
+COMPLIANCE_SYSTEM_PROMPT = """你是一位财经内容合规审核官，专精中国财经类内容平台（抖音、视频号、小红书、微信公众号）的监管规则与违规红线。
+
+【你的核心职责】
+- 识别内容中的合规风险点，并给出明确的违规定性
+- 将违规话术自动改写为合规表达，保留原意但消除法律风险
+- 输出结构化的合规审核报告
+
+【必须检测的红线类型】
+1. 违规荐股/承诺收益：如"这只股票必涨"、"买入XX稳赚"、"保证收益XX%"
+2. 极端诱导词：如"千万别错过"、"再不买就来不及了"、"100%确定"
+3. 敏感表述：如"内部消息"、"小道消息"、"私募基金内部资料"
+4. 违禁承诺：如"我负责"、"亏损包赔"、"跟我买不会亏"
+5. 政治金融交界敏感词：涉及国家金融政策批评、高层内幕等
+6. 资质越界：非持牌机构或个人进行具体投资建议
+
+【改写原则】
+- 将结论型改为分析型：把"X股票明天必涨"改为"该标的近期技术面活跃，可关注其突破阻力位的表现"
+- 将承诺型改为观察型：把"买入必赚"改为"从历史数据看，该类型标的在类似环境下曾有较好表现，仍需结合自身风险偏好判断"
+- 强制加入风险提示：高风险表达必须附加"注意控制仓位风险"或"投资有风险，决策需谨慎"
+- 保留专业性：改写后内容必须仍有信息量，不能变成空话
+
+【输出格式】
+严格输出 JSON，不要 Markdown，不要解释：
+{
+  "is_compliant": true/false,
+  "risk_level": "低/中/高",
+  "issues": [
+    {"type": "违规类型", "original": "原文片段", "reason": "违规原因", "suggestion": "合规改写"}
+  ],
+  "revised_content": "完整的合规改写版本（如无违规则与原文相同）",
+  "summary": "一句话合规总结（≤50字）"
+}"""
+
+MOMENTS_COPY_SYSTEM_PROMPT = """你是一位顶级新媒体运营官，专注为财经主播撰写朋友圈/微博诱饵文案。
+
+【核心目标】
+用一条50字以内的朋友圈文案，让已关注主播的粉丝在看到后，有强烈欲望晚上准时来看直播。
+
+【文案公式】
+冲突感 + 悬念 + 行动指令
+
+【表达要求】
+- 极度精简：50字以内，字字有用
+- 制造紧迫感：今晚/今天/限时
+- 放出一个让人好奇但没答案的判断
+- 有明确的call-to-action（晚上XX点见/直播间等你）
+- 禁止违规：不能承诺收益，不能使用极端诱导词
+
+【参考风格示例】
+"今天一件事，可能会让很多人的持仓逻辑彻底重写。晚上8点直播间说透。"
+"市场在给一个信号，大多数人还没看懂。今晚我们来拆。"
+"有一个数据，看懂的人都在默默加仓。晚8点，等你来。"
+"""
+
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
 
 
@@ -123,6 +179,24 @@ class ContentGenerator:
             "重组为真正有洞察、有判断、有传播力的内容。你擅长从新闻中提炼主线、用商业"
             "分析框架解释因果，并用通俗但不浅薄的中文讲清复杂问题。"
         )
+
+    def _persona_section(self, persona: Optional[Dict] = None) -> str:
+        """将主播人设注入 Prompt，强化个人 IP 特色输出。"""
+        if not persona:
+            return ""
+        parts = []
+        invest_style = (persona.get("invest_style") or "").strip()
+        catchphrases = (persona.get("catchphrases") or "").strip()
+        ip_desc = (persona.get("ip_desc") or "").strip()
+        if invest_style:
+            parts.append(f"投资流派/人设：{invest_style}")
+        if catchphrases:
+            parts.append(f"标志性口头禅（请自然融入，每篇至少用1-2次）：{catchphrases}")
+        if ip_desc:
+            parts.append(f"主播个人标签/风格描述：{ip_desc}")
+        if not parts:
+            return ""
+        return "\n【主播人设（必须体现，强制注入）】\n" + "\n".join(f"- {p}" for p in parts) + "\n"
 
     def _news_snapshot(self, news_items: List[Dict]) -> str:
         lines = []
@@ -229,6 +303,7 @@ class ContentGenerator:
         editorial_brief: Dict[str, Any],
         duration: int = 30,
         style: str = "专业",
+        persona: Optional[Dict] = None,
     ) -> str:
         news_details = "\n".join([
             f"{i+1}. 【{n.get('category', '财经')}】{n['title']}\n   来源：{n['source']}"
@@ -253,7 +328,7 @@ class ContentGenerator:
 
         return f"""【内容任务】
 请生成一份真正可上播的财经直播稿，而不是新闻摘要。
-
+{self._persona_section(persona)}
 【编辑部主线】
 {editorial_brief.get('lead_angle', '')}
 
@@ -292,13 +367,13 @@ class ContentGenerator:
 请直接输出完整直播稿，不要写解释：
 """
 
-    async def generate_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业") -> str:
+    async def generate_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业", persona: Optional[Dict] = None) -> str:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
         )
-        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style)
+        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
             response = await self._call_ai(
                 prompt,
@@ -310,13 +385,13 @@ class ContentGenerator:
             logger.error("Generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_script(news_items)
 
-    async def stream_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业") -> AsyncIterator[str]:
+    async def stream_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业", persona: Optional[Dict] = None) -> AsyncIterator[str]:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
         )
-        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style)
+        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
             async for chunk in self._stream_ai(
                 prompt,
@@ -331,7 +406,7 @@ class ContentGenerator:
             for chunk in self._chunk_text(fallback, chunk_size=160):
                 yield chunk
 
-    async def generate_article(self, news_items: List[Dict], title: str = "", focus_topic: str = "") -> Dict:
+    async def generate_article(self, news_items: List[Dict], title: str = "", focus_topic: str = "", persona: Optional[Dict] = None) -> Dict:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="写一篇能发在公众号上的高质量财经文章，不止要讲发生了什么，更要讲为什么重要",
@@ -341,7 +416,7 @@ class ContentGenerator:
         focus_hint = f"\n【重点聚焦】\n{focus_topic}\n" if focus_topic else ""
         prompt = f"""【内容任务】
 请写一篇让人读完就想转发的财经公众号长文。
-{preferred_title}{focus_hint}
+{preferred_title}{focus_hint}{self._persona_section(persona)}
 【总论点】
 {editorial_brief.get('lead_angle', '')}
 
@@ -415,7 +490,7 @@ class ContentGenerator:
             logger.warning("Outline analysis failed, proceeding without: %s", e)
             return ""
 
-    async def generate_deep_dive(self, news_items: List[Dict], focus_topic: str = "") -> str:
+    async def generate_deep_dive(self, news_items: List[Dict], focus_topic: str = "", persona: Optional[Dict] = None) -> str:
         if not focus_topic:
             focus_topic = news_items[0]["title"]
 
@@ -429,7 +504,7 @@ class ContentGenerator:
         outline_context = f"\n【预分析框架】\n{internal_outline}\n" if internal_outline else ""
         prompt = f"""【深度研究任务】
 你要写的不是新闻汇总，而是一篇能被人截图传播的原创深度分析。
-
+{self._persona_section(persona)}
 【总论点】
 {editorial_brief.get('lead_angle', '')}
 {outline_context}
@@ -469,7 +544,7 @@ class ContentGenerator:
             logger.error("Deep dive generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_deep_dive(news_items)
 
-    async def generate_ppt_script(self, news_items: List[Dict], focus_topic: str = "") -> str:
+    async def generate_ppt_script(self, news_items: List[Dict], focus_topic: str = "", persona: Optional[Dict] = None) -> str:
         if not focus_topic:
             focus_topic = news_items[0]["title"]
         editorial_brief = await self._prepare_editorial_brief(
@@ -483,7 +558,7 @@ class ContentGenerator:
         ])
         prompt = f"""【PPT创作任务】
 你要生成一套可直接用于财经讲解、路演、直播准备的完整 PPT 脚本。
-
+{self._persona_section(persona)}
 【核心主题】
 {focus_topic}
 
@@ -531,6 +606,106 @@ N+4. 记忆点与先行指标
         except Exception as e:
             logger.error("PPT script generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_ppt_script(news_items, focus_topic)
+
+    # ─────────────────────────────────────────────────────────────────
+    # 核心壁垒 1：财经风控合规 Agent
+    # ─────────────────────────────────────────────────────────────────
+
+    async def compliance_review(self, content: str) -> Dict[str, Any]:
+        """对已生成内容做财经合规审核，返回风险报告和改写版本。"""
+        if not content or not content.strip():
+            return {
+                "is_compliant": True,
+                "risk_level": "低",
+                "issues": [],
+                "revised_content": content,
+                "summary": "内容为空，无需审核。",
+            }
+        prompt = f"""请对以下财经内容进行全面合规审核，识别所有违规表达并输出改写版本。
+
+【待审核内容】
+{content[:6000]}
+
+请严格按照系统要求的 JSON 格式输出，不要添加任何额外说明。
+"""
+        try:
+            raw = await self._call_ai(prompt, max_tokens=4000, system_prompt=COMPLIANCE_SYSTEM_PROMPT)
+            result = self._extract_json(raw)
+            # Ensure required fields exist
+            result.setdefault("is_compliant", True)
+            result.setdefault("risk_level", "低")
+            result.setdefault("issues", [])
+            result.setdefault("revised_content", content)
+            result.setdefault("summary", "合规审核完成。")
+            return result
+        except Exception as e:
+            logger.error("Compliance review error: %s | %s", e, self._error_context())
+            return {
+                "is_compliant": True,
+                "risk_level": "低",
+                "issues": [],
+                "revised_content": content,
+                "summary": "合规审核服务暂时不可用，请人工复核。",
+            }
+
+    # ─────────────────────────────────────────────────────────────────
+    # 核心壁垒 3：一键内容矩阵（朋友圈预热 + 直播稿 + 复盘文章 + PPT脚本）
+    # ─────────────────────────────────────────────────────────────────
+
+    async def generate_moments_copy(
+        self, news_items: List[Dict], focus_topic: str = "", live_time: str = "", persona: Optional[Dict] = None
+    ) -> str:
+        """生成朋友圈/微博预热诱饵文案（50字以内）。"""
+        topic = focus_topic or (news_items[0]["title"] if news_items else "今日财经要闻")
+        time_hint = f"（晚{live_time}点直播）" if live_time else "（今晚直播）"
+        prompt = f"""请根据以下财经主题，写一条50字以内的朋友圈预热文案，用于吸引粉丝晚上来看直播。
+{self._persona_section(persona)}
+【今日核心话题】{topic}
+【直播时间提示】{time_hint}
+【相关新闻】{self._news_snapshot(news_items[:3])}
+
+直接输出文案正文，不要标题，不要解释，不超过50字：
+"""
+        try:
+            return (await self._call_ai(prompt, max_tokens=200, system_prompt=MOMENTS_COPY_SYSTEM_PROMPT)).strip()
+        except Exception as e:
+            logger.error("Moments copy generation error: %s | %s", e, self._error_context())
+            return f"今天有一件事，可能会让你的判断彻底改变。{time_hint}，直播间见。"
+
+    async def generate_content_matrix(
+        self,
+        news_items: List[Dict],
+        focus_topic: str = "",
+        duration: int = 30,
+        style: str = "专业",
+        live_time: str = "",
+        persona: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
+        """一键生成完整内容矩阵：朋友圈预热 + 直播稿 + 复盘文章 + PPT脚本。"""
+        moments_task = asyncio.create_task(
+            self.generate_moments_copy(news_items, focus_topic=focus_topic, live_time=live_time, persona=persona)
+        )
+        script_task = asyncio.create_task(
+            self.generate_stream_script(news_items, duration=duration, style=style, persona=persona)
+        )
+        article_task = asyncio.create_task(
+            self.generate_article(news_items, focus_topic=focus_topic, persona=persona)
+        )
+        ppt_task = asyncio.create_task(
+            self.generate_ppt_script(news_items, focus_topic=focus_topic, persona=persona)
+        )
+
+        moments, stream_script, article, ppt_script = await asyncio.gather(
+            moments_task, script_task, article_task, ppt_task
+        )
+
+        return {
+            "moments_copy": moments,
+            "stream_script": stream_script,
+            "article": article,
+            "ppt_script": ppt_script,
+            "generated_at": datetime.now().isoformat(),
+        }
 
     async def generate_ppt(self, news_items: List[Dict], title: str = "", style: str = "专业", focus_topic: str = "") -> bytes:
         from pptx import Presentation

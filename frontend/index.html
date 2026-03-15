@@ -197,6 +197,14 @@
                                 >{{ s }}</button>
                             </div>
                         </div>
+                        <div class="param-group persona-indicator" v-if="persona.invest_style || persona.catchphrases || persona.ip_desc">
+                            <label class="param-label">🎙️ 人设已启用</label>
+                            <span class="persona-tag">{{ persona.invest_style || '自定义人设' }} <button @click="showSettings = true" class="persona-edit-btn">编辑</button></span>
+                        </div>
+                        <div v-else class="param-group">
+                            <label class="param-label" style="color:var(--text-light)">🎙️ 人设未设置</label>
+                            <button @click="showSettings = true" class="param-btn">⚙️ 设置主播人设</button>
+                        </div>
                     </div>
 
                     <!-- 已选新闻摘要 -->
@@ -263,6 +271,15 @@
                             <span class="gen-hint">三合一</span>
                         </button>
                         <button
+                            @click="generateMatrix"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-matrix"
+                        >
+                            <span class="icon">🎯</span>
+                            <span class="text">内容矩阵</span>
+                            <span class="gen-hint">朋友圈+直播+复盘</span>
+                        </button>
+                        <button
                             @click="generatePpt"
                             :disabled="selectedCount === 0 || generatingPpt"
                             class="gen-btn gen-ppt"
@@ -300,26 +317,42 @@
                     </div>
 
                     <!-- 全部生成时的tab切换 -->
-                    <div v-if="allResults && !generating" class="result-tabs">
-                        <button
-                            v-for="tab in resultTabs"
-                            :key="tab.key"
-                            @click="switchResultTab(tab.key)"
-                            :class="['result-tab', { active: activeResultTab === tab.key }]"
-                        >{{ tab.label }}</button>
+                    <div v-if="(allResults || matrixResult) && !generating" class="result-tabs">
+                        <template v-if="matrixResult">
+                            <button
+                                v-for="tab in matrixTabs"
+                                :key="tab.key"
+                                @click="switchMatrixTab(tab.key)"
+                                :class="['result-tab', { active: activeResultTab === tab.key }]"
+                            >{{ tab.label }}</button>
+                        </template>
+                        <template v-else>
+                            <button
+                                v-for="tab in resultTabs"
+                                :key="tab.key"
+                                @click="switchResultTab(tab.key)"
+                                :class="['result-tab', { active: activeResultTab === tab.key }]"
+                            >{{ tab.label }}</button>
+                        </template>
                     </div>
 
                     <!-- 生成结果 -->
                     <div v-if="result && !generating" class="result-section">
                         <div class="result-header">
                             <h3>{{ resultTitle }}</h3>
-                            <div class="result-actions">
+                        <div class="result-actions">
                                 <button v-if="!editingContent" @click="startEditing" class="btn-small">✏️ 编辑</button>
                                 <button v-if="editingContent" @click="saveEditing" class="btn-small btn-success">💾 保存</button>
                                 <button v-if="editingContent" @click="cancelEditing" class="btn-small">取消</button>
                                 <button @click="copyResult" class="btn-small">📋 复制</button>
                                 <button v-if="resultType === 'article'" @click="copyRichText" class="btn-small btn-wechat" title="复制为富文本，可直接粘贴进微信编辑器">📄 复制HTML</button>
                                 <button @click="downloadResult" class="btn-small">⬇️ 下载</button>
+                                <button
+                                    @click="checkCompliance"
+                                    :disabled="checkingCompliance"
+                                    class="btn-small btn-compliance"
+                                    title="财经合规审核 — 检测违规话术并自动改写"
+                                >{{ checkingCompliance ? '⏳ 审核中…' : '🛡️ 合规审核' }}</button>
                                 <button @click="closeResult" class="btn-small btn-close">✕</button>
                             </div>
                         </div>
@@ -337,6 +370,33 @@
                             <span class="read-time">⏱ 约 {{ readTime }} 分钟阅读</span>
                             <span v-if="editingContent" class="editing-hint">正在编辑中...</span>
                         </div>
+
+                        <!-- 合规审核报告 -->
+                        <transition name="slide-down">
+                            <div v-if="complianceResult" class="compliance-panel" :class="'risk-' + complianceResult.risk_level">
+                                <div class="compliance-header">
+                                    <span class="compliance-icon">{{ complianceResult.is_compliant ? '✅' : '⚠️' }}</span>
+                                    <strong>合规审核报告</strong>
+                                    <span class="compliance-risk-badge" :class="'risk-' + complianceResult.risk_level">
+                                        风险等级：{{ complianceResult.risk_level }}
+                                    </span>
+                                    <button @click="complianceResult = null" class="compliance-close">✕</button>
+                                </div>
+                                <p class="compliance-summary">{{ complianceResult.summary }}</p>
+                                <div v-if="complianceResult.issues && complianceResult.issues.length > 0" class="compliance-issues">
+                                    <div v-for="(issue, idx) in complianceResult.issues" :key="idx" class="compliance-issue">
+                                        <span class="issue-type">{{ issue.type }}</span>
+                                        <div class="issue-original">原文：<em>{{ issue.original }}</em></div>
+                                        <div class="issue-reason">原因：{{ issue.reason }}</div>
+                                        <div class="issue-suggestion">建议：{{ issue.suggestion }}</div>
+                                    </div>
+                                </div>
+                                <div v-if="complianceResult.revised_content && !complianceResult.is_compliant" class="compliance-revised">
+                                    <button @click="applyRevisedContent" class="btn-small btn-success">✅ 应用改写版本</button>
+                                    <span class="compliance-revised-hint">将用合规版本替换当前内容</span>
+                                </div>
+                            </div>
+                        </transition>
                     </div>
 
                     <!-- 初始提示 -->
@@ -348,6 +408,11 @@
                             <li>点击生成按钮，AI将自动生成内容</li>
                             <li>生成后可在线编辑修改，再复制或下载</li>
                         </ol>
+                        <div class="tips-features">
+                            <div class="tip-feature">🛡️ <strong>合规审核</strong>：生成后点击「合规审核」，自动检测并改写违规话术</div>
+                            <div class="tip-feature">🎙️ <strong>主播人设</strong>：在设置中配置你的投资流派和口头禅，AI会注入你的专属风格</div>
+                            <div class="tip-feature">🎯 <strong>内容矩阵</strong>：一键生成朋友圈预热+直播稿+复盘文章+PPT脚本全套内容</div>
+                        </div>
                         <div class="shortcuts-hint">
                             <span class="shortcut-label">快捷键：</span>
                             <span class="shortcut-badge">Ctrl+G</span> 快速生成直播稿
@@ -391,6 +456,38 @@
                             <option value="轻松">轻松</option>
                             <option value="解读型">解读型</option>
                         </select>
+                    </div>
+                    <hr class="modal-divider">
+                    <div class="modal-section-title">🎙️ 主播人设 / IP记忆库（核心壁垒）</div>
+                    <div class="form-group">
+                        <label>投资流派 / 人设风格</label>
+                        <input
+                            type="text"
+                            v-model="persona.invest_style"
+                            placeholder="如：价值投资派、情绪周期打板派、宏观对冲派"
+                            class="form-input"
+                        >
+                        <p class="form-hint">AI将以此视角生成内容，强化你的专属IP</p>
+                    </div>
+                    <div class="form-group">
+                        <label>标志性口头禅</label>
+                        <input
+                            type="text"
+                            v-model="persona.catchphrases"
+                            placeholder="如：跟着资金走，别跟着情绪走"
+                            class="form-input"
+                        >
+                        <p class="form-hint">AI会在生成内容中自然融入你的口头禅</p>
+                    </div>
+                    <div class="form-group">
+                        <label>主播标签 / 风格描述</label>
+                        <textarea
+                            v-model="persona.ip_desc"
+                            placeholder="如：专注A股主线，偏好高确定性赛道，行文犀利有料不废话"
+                            class="form-input form-textarea"
+                            rows="2"
+                        ></textarea>
+                        <p class="form-hint">描述你的内容风格与受众定位，越详细越好</p>
                     </div>
                 </div>
                 <div class="modal-footer">
