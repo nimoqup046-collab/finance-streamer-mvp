@@ -58,7 +58,7 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 # 请求模型
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive, ppt, flash_report
+    content_type: str  # stream_script, article, deep_dive, ppt, flash_report, douyin, xiaohongshu, weibo, moments
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
@@ -293,6 +293,45 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
+        elif request.content_type == "douyin":
+            content = await generator.generate_douyin(
+                selected_news,
+                duration=request.duration or 30
+            )
+            return {
+                "type": "douyin",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "xiaohongshu":
+            content = await generator.generate_xiaohongshu(selected_news)
+            return {
+                "type": "xiaohongshu",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "weibo":
+            content = await generator.generate_weibo(selected_news)
+            return {
+                "type": "weibo",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        elif request.content_type == "moments":
+            content = await generator.generate_moments(selected_news)
+            return {
+                "type": "moments",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
         else:
             raise HTTPException(status_code=400, detail="不支持的内容类型")
 
@@ -339,6 +378,99 @@ async def generate_all(news_ids: List[str] = Body(...)):
         logger.error("批量生成失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
+# 合规安全检查（风险词扫描 + 替换建议）
+@app.post("/api/compliance/check")
+async def check_compliance(content: str = Body(..., embed=True)):
+    """对生成内容进行合规安全扫描
+    返回：风险词列表、风险等级、替换建议
+    """
+    # 合规风险词库：三级风险分类
+    HIGH_RISK = [
+        ("必涨", "可能上行"),
+        ("必跌", "存在下行压力"),
+        ("稳赚", "历史表现较好"),
+        ("无风险", "相对低风险"),
+        ("内幕", "市场信息"),
+        ("坐庄", "主力资金"),
+        ("操纵", "影响"),
+        ("保本", "本金有一定保障"),
+        ("内部消息", "市场观点"),
+        ("押注", "重仓配置"),
+        ("百分百", "大概率"),
+        ("100%盈利", "历史盈利率较高"),
+    ]
+    MEDIUM_RISK = [
+        ("一定会涨", "短期可能上行"),
+        ("肯定涨", "技术面偏乐观"),
+        ("肯定跌", "技术面偏悲观"),
+        ("割韭菜", "散户受损"),
+        ("收割", "资金博弈"),
+        ("跑路", "风险暴露"),
+        ("爆仓", "强制平仓"),
+        ("追涨", "追高操作"),
+        ("抄底", "低位布局"),
+        ("赌", "博取"),
+    ]
+    LOW_RISK = [
+        ("建议买入", "可以关注布局机会"),
+        ("建议卖出", "可以考虑减仓"),
+        ("推荐购买", "有关注价值"),
+        ("值得买", "有配置价值"),
+        ("快买", "可考虑布局"),
+    ]
+
+    found_risks = []
+    risk_level = "无风险"
+
+    content_lower = content.lower()
+    for term, suggestion in HIGH_RISK:
+        if term in content:
+            found_risks.append({
+                "term": term,
+                "level": "高风险",
+                "suggestion": suggestion,
+                "description": f"「{term}」涉嫌股票推荐或夸大收益，违反证券法规"
+            })
+            risk_level = "高风险"
+
+    for term, suggestion in MEDIUM_RISK:
+        if term in content:
+            found_risks.append({
+                "term": term,
+                "level": "中风险",
+                "suggestion": suggestion,
+                "description": f"「{term}」措辞较强，建议替换为更中性的表达"
+            })
+            if risk_level == "无风险":
+                risk_level = "中风险"
+
+    for term, suggestion in LOW_RISK:
+        if term in content:
+            found_risks.append({
+                "term": term,
+                "level": "低风险",
+                "suggestion": suggestion,
+                "description": f"「{term}」可能被认定为投资建议，建议加免责声明"
+            })
+            if risk_level == "无风险":
+                risk_level = "低风险"
+
+    # 检查是否有免责声明
+    has_disclaimer = any(kw in content for kw in [
+        "不构成投资建议", "仅供参考", "投资有风险", "入市需谨慎"
+    ])
+
+    return {
+        "risk_level": risk_level,
+        "risks": found_risks,
+        "risk_count": len(found_risks),
+        "has_disclaimer": has_disclaimer,
+        "disclaimer_needed": not has_disclaimer and len(found_risks) > 0,
+        "suggested_disclaimer": "本内容仅供参考，不构成投资建议。投资有风险，决策需谨慎。",
+        "checked_at": datetime.now().isoformat()
+    }
+
+
 # 获取系统状态
 @app.get("/api/status")
 async def get_status():
@@ -354,6 +486,11 @@ async def get_status():
             "ppt": True,
             "flash_report": True,
             "news_score": True,
+            "douyin": True,
+            "xiaohongshu": True,
+            "weibo": True,
+            "moments": True,
+            "compliance_check": True,
             "infographic": False
         }
     }

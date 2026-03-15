@@ -161,6 +161,92 @@ FLASH_REPORT_SYSTEM_PROMPT = """你是一位顶级财经编辑，专门写一针
 禁止废话：建议关注、可能有影响、需要观察、存在不确定性、仅供参考"""
 
 
+# ── Agent 6：抖音口播稿 ── 强钩子，15/30/60秒版，算法友好
+DOUYIN_SYSTEM_PROMPT = """你是一位拥有1000万粉丝的顶尖财经抖音创作者，深度理解抖音算法逻辑。
+
+【核心人设】
+- 前3秒必须钩住人：没有完播率就没有流量，没有流量就没有影响力
+- 口播极度口语化：像在跟朋友打电话，不是在播新闻
+- 数字必须有冲击感：不说"千亿"，说"够你不上班干800年"
+- 每句话都是下一句的悬念钩子
+
+【抖音内容铁律】
+- 开头禁止：大家好/欢迎收看/我是XX/今天给大家/点赞关注
+- 开头必须：数字冲击/反直觉判断/直接进入场景/悬疑切入
+- 结尾必须：留悬念/抛问题/引评论（不能说"拜拜"）
+- 每10秒设置一个信息密度峰值
+- 口播节奏：每句≤15字，停顿在关键词后
+
+【格式标记】
+[停顿] = 口播停顿点
+[重读] = 语气加重
+[数字冲击] = 此处配数据字幕
+[钩子] = 此处是留人节点"""
+
+# ── Agent 7：小红书图文 ── 封面标题+干货清单+话题标签
+XIAOHONGSHU_SYSTEM_PROMPT = """你是一位小红书头部财经博主，粉丝量50万+，爆款率极高。
+
+【核心人设】
+- 封面标题是生死线：95%的用户靠封面标题决定要不要点进来
+- 内容结构：钩子开场→价值干货→行动呼吁→话题引流
+- 语气：像闺蜜/好友分享干货，有温度、不装、不硬说教
+- emoji使用：适当使用（3-5个/条），但不堆砌
+
+【小红书内容铁律】
+- 封面标题必须包含：数字/感叹词/受益人群/利益点之一
+- 正文分点清单：每条不超过30字，总计5-8条
+- 必须有"姐妹们/宝子们"等社区化称呼（2-3次即可）
+- 话题标签：6-8个，覆盖：热门话题+垂类话题+地域话题
+- 最后1-2句必须引导互动（提问/投票/评论区见）
+
+【禁止】
+- 禁止堆砌专业术语（CPI/ROE/PEG解释清楚再用）
+- 禁止无聊的废话开头
+- 禁止结尾只写"点赞收藏关注"（要有实质性收尾）"""
+
+# ── Agent 8：微博热评体 ── 280字，有话题，引评论，有立场
+WEIBO_SYSTEM_PROMPT = """你是一位微博财经大V，粉丝100万+，热搜常客，评论区永远很热闹。
+
+【核心人设】
+- 微博是广场：你在广场上喊话，要让人停下来听，还要让人忍不住转发
+- 有立场：不说废话，直接表明态度，"我认为""我判断"
+- 引争议：观点要有点锋芒，让人想反驳或点赞
+- 简洁有力：280字写出1000字的信息密度
+
+【微博内容铁律】
+- 总字数控制在180-250字
+- 必须有#话题标签#（1-2个，放开头或结尾）
+- 必须有数字（至少1个具体数字）
+- 结尾必须是开放式问题（引评论）或强观点（引转发）
+- 禁止用"希望""期待""不确定"等模糊词
+- 可以@相关机构或人物（@国家发改委 @央行等）
+
+【情绪基调】
+- 可以用"这很耐人寻味""有趣""太刺激了"等表达个人情感
+- 语气偏犀利，有判断，有温度，不冷漠"""
+
+# ── Agent 9：朋友圈体 ── 150字第一人称，像真人在发朋友圈
+MOMENTS_SYSTEM_PROMPT = """你是一位有品味的财经从业者，朋友圈经常被人问"这是什么意思"然后追问你。
+
+【核心人设】
+- 朋友圈是私域：像跟认识你的朋友说话，不是在广播
+- 第一人称：用"我"，表达真实感受和判断
+- 知识密度高但读起来轻松：行家说给普通朋友听的那种
+- 不装：不要故作高深，就是说说你今天看到了什么、你怎么看
+
+【朋友圈内容铁律】
+- 总字数100-150字
+- 第一人称（"今天看到一件事...""突然想到..."）
+- 有一个具体的细节/数字/案例
+- 结尾留白（一个开放式感叹或问题，让朋友想评论）
+- 不加话题标签（朋友圈不需要）
+- 不要结尾号召（"欢迎讨论"之类的话）
+
+【禁止】
+- 禁止媒体腔（不说"据报道""业内人士表示"）
+- 禁止"仅供参考/不构成建议"
+- 禁止多余的emoji（最多1-2个，自然一点）"""
+
 # 通用备用（向后兼容）
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
 
@@ -880,6 +966,228 @@ class ContentGenerator:
             logger.error("PPT generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_ppt(news_items, focus_topic)
 
+    async def generate_douyin(
+        self,
+        news_items: List[Dict],
+        duration: int = 30
+    ) -> str:
+        """生成抖音口播稿 —— 强钩子，15/30/60秒版"""
+        news_details = "\n".join([
+            f"{i+1}. 【{n.get('category','财经')}】{n['title']}（{n['source']}）"
+            for i, n in enumerate(news_items[:3])
+        ])
+        # 根据时长决定字数目标
+        word_targets = {15: "120-160字", 30: "250-320字", 60: "500-650字"}
+        word_target = word_targets.get(duration, "250-320字")
+        sec_label = f"{duration}秒"
+
+        prompt = f"""【抖音口播稿创作任务】
+生成一条{sec_label}财经口播稿，目标字数：{word_target}。
+
+【今日财经素材】
+{news_details}
+
+---
+
+【{sec_label}版口播稿要求】
+
+**开头（前3秒，1-2句话）：**
+- 用数字冲击 OR 反直觉判断 OR 直接进入场景
+- 绝对禁止：大家好/欢迎/点赞关注/我是谁
+
+**主体内容：**
+- 每个信息点后面埋下一个"悬念钩子"，让观众必须听下一句
+- 关键数字必须换算（不说"千亿"，说"够你不上班干X年"）
+- 每10秒至少1个新信息点或新转折
+- 用[停顿][重读][数字冲击][钩子]标注口播节奏
+
+**结尾（最后5秒）：**
+- 必须是以下之一：开放式问题 / 反转悬念 / 下集预告
+- 禁止：好了/拜拜/谢谢观看
+
+【输出格式】
+直接输出口播稿正文，用 [停顿][重读][数字冲击][钩子] 标注关键节奏点。
+
+---
+
+【硬性指标】
+✅ 字数：{word_target}
+✅ 前3秒强钩子（开头不能有废话）
+✅ 至少3个具体数字（真实合理，换算成直观单位）
+✅ 每10秒有1个悬念/转折/信息峰值
+✅ 结尾引评论或留悬念，不能是硬结束
+✅ 全程口语化，像打电话，不像播新闻
+
+请直接输出口播稿，不要前言："""
+
+        try:
+            result = await self._call_ai(
+                prompt,
+                max_tokens=1500,
+                system_prompt=DOUYIN_SYSTEM_PROMPT
+            )
+            date_str = datetime.now().strftime("%m月%d日")
+            return f"""🎬 抖音口播稿 · {sec_label}版 · {date_str}
+{'─'*50}
+
+{result.strip()}
+
+{'─'*50}
+📌 口播提示：[停顿]=停顿点 [重读]=语气加重 [数字冲击]=配字幕 [钩子]=留人节点"""
+        except Exception as e:
+            logger.error("抖音口播稿生成失败: %s | %s", e, self._error_context())
+            return self._generate_fallback_douyin(news_items, duration)
+
+    async def generate_xiaohongshu(self, news_items: List[Dict]) -> str:
+        """生成小红书图文 —— 封面标题+干货清单+话题标签"""
+        news_details = "\n".join([
+            f"• 【{n.get('category','财经')}】{n['title']}（{n['source']}）"
+            for n in news_items[:4]
+        ])
+        date_str = datetime.now().strftime("%m月%d日")
+
+        prompt = f"""【小红书财经图文创作任务】
+今天是{date_str}，请基于以下财经新闻，生成一篇高流量小红书图文。
+
+【今日素材】
+{news_details}
+
+---
+
+【输出格式——严格遵守】
+
+===封面标题选项（3个，任选其一）===
+标题A（数字+利益型）：[公式：今天这X件事/数字 + 受益人群 + 利益点]
+标题B（反转悬念型）：[让人意外的结论，引发好奇]
+标题C（紧迫感型）：[时效性强，让人感觉错过了就亏了]
+
+===正文===
+[1-2句钩子开头，姐妹们/宝子们 打招呼，说清楚今天讲什么]
+
+📌 今日财经速知（干货清单，每条≤30字，共5-8条）
+✅ [第1条，有数字或具体事实]
+✅ [第2条]
+✅ [第3条]
+✅ [第4条]
+✅ [第5条]
+[如有更多可继续]
+
+💡 最值得关注的一点：
+[用1-2句话，说出所有条目中最有价值的那个洞察]
+
+[结尾1-2句：提问或引导评论，例如"姐妹们，你们怎么看？"或"这条你们中了几条？评论区见！"]
+
+===话题标签===
+#[热门大话题] #[财经垂类话题] #[今日具体事件] #[受益人群话题] #[投资理财] #[财经科普] #[[具体行业]投资] #[今日XX]
+
+===
+【硬性指标】
+✅ 封面标题3个，风格各异
+✅ 干货清单5-8条，每条有具体事实/数字
+✅ 有"姐妹们"或"宝子们"等社区化称呼（2-3次）
+✅ 结尾有互动引导
+✅ 话题标签6-8个
+✅ 整体语气温暖有温度，像闺蜜分享
+
+请直接输出："""
+
+        try:
+            result = await self._call_ai(
+                prompt,
+                max_tokens=1500,
+                system_prompt=XIAOHONGSHU_SYSTEM_PROMPT
+            )
+            return result.strip()
+        except Exception as e:
+            logger.error("小红书图文生成失败: %s | %s", e, self._error_context())
+            return self._generate_fallback_xiaohongshu(news_items)
+
+    async def generate_weibo(self, news_items: List[Dict]) -> str:
+        """生成微博热评体 —— 180-250字，有立场，引评论"""
+        news_details = "\n".join([
+            f"• 【{n.get('category','财经')}】{n['title']}（{n['source']}）"
+            for n in news_items[:4]
+        ])
+        date_str = datetime.now().strftime("%m月%d日")
+
+        prompt = f"""【微博财经内容创作任务】
+今天是{date_str}，请基于以下财经新闻，生成一条高互动微博。
+
+【今日素材】
+{news_details}
+
+---
+
+【要求】
+- 总字数：180-250字
+- 开头必须有#话题标签#（1-2个，热门相关）
+- 必须表达明确立场（"我认为""我判断""值得注意的是"）
+- 至少1个具体数字（换算成直观单位）
+- 结尾是开放式问题 OR 强观点（引评论/引转发）
+- 语气：犀利有温度，有个人色彩，不冷漠
+
+【输出3个微博版本，风格各异】
+
+版本A（强立场型）：直接表达鲜明观点，可以有点争议性
+版本B（数据洞察型）：从数字切入，揭示被忽视的事实
+版本C（问题引导型）：提出一个尖锐问题，引发读者思考
+
+每个版本后面标注：[适合发布时间：X点前后] [预计互动类型：评论/转发]
+
+请直接输出3个版本："""
+
+        try:
+            result = await self._call_ai(
+                prompt,
+                max_tokens=1200,
+                system_prompt=WEIBO_SYSTEM_PROMPT
+            )
+            return result.strip()
+        except Exception as e:
+            logger.error("微博内容生成失败: %s | %s", e, self._error_context())
+            return self._generate_fallback_weibo(news_items)
+
+    async def generate_moments(self, news_items: List[Dict]) -> str:
+        """生成朋友圈体 —— 100-150字第一人称，有温度，留白"""
+        news_details = "\n".join([
+            f"• 【{n.get('category','财经')}】{n['title']}（{n['source']}）"
+            for n in news_items[:3]
+        ])
+
+        prompt = f"""【朋友圈财经内容创作任务】
+请基于以下财经新闻，生成一条"让朋友忍不住评论问你"的朋友圈文案。
+
+【今日素材】
+{news_details}
+
+---
+
+【要求】
+- 总字数：100-150字
+- 第一人称（用"我"），像真人在发朋友圈
+- 有一个具体的细节/数字/场景让内容真实可感
+- 结尾留白：一个感叹或开放式问题（让朋友想评论）
+- 不加话题标签，不加号召语
+- 语气：像行家跟普通朋友聊天，轻松但有干货
+
+【输出2个版本】
+
+版本A（事件感悟型）：从今天发生的事说起，有个人感悟
+版本B（反思提问型）：提出一个让人停下来思考的问题
+
+请直接输出2个版本（不需要标题说明）："""
+
+        try:
+            result = await self._call_ai(
+                prompt,
+                max_tokens=800,
+                system_prompt=MOMENTS_SYSTEM_PROMPT
+            )
+            return result.strip()
+        except Exception as e:
+            logger.error("朋友圈文案生成失败: %s | %s", e, self._error_context())
+            return self._generate_fallback_moments(news_items)
+
     async def _extract_news_signals(self, news_items: List[Dict]) -> str:
         """新闻信号预提取（Reportify RAG思路）
         在正式生成前，提取结构化投资信号作为上下文注入，提升内容精准度。
@@ -1266,6 +1574,78 @@ class ContentGenerator:
             lines.append(f"③ 建议：结合自身持仓判断\n")
         lines.append("💡 今日金句：看清本质，比跟风重要")
         return "\n".join(lines)
+
+
+    def _generate_fallback_douyin(self, news_items: List[Dict], duration: int = 30) -> str:
+        """抖音口播稿备用生成"""
+        news = news_items[0] if news_items else {}
+        return f"""🎬 抖音口播稿 · {duration}秒版
+{'─'*50}
+
+[重读] 等一下，你知道吗——[停顿]
+
+今天有一件事，很多人没注意到。[钩子]
+
+{news.get('title', '财经重要信息')}——[停顿]
+这件事背后，藏着一个很多人想不到的逻辑。[数字冲击]
+
+[钩子] 你猜接下来会发生什么？评论区告诉我你的判断。
+
+{'─'*50}
+📌 口播提示：[停顿]=停顿点 [重读]=语气加重 [数字冲击]=配字幕 [钩子]=留人节点"""
+
+    def _generate_fallback_xiaohongshu(self, news_items: List[Dict]) -> str:
+        """小红书图文备用生成"""
+        date_str = datetime.now().strftime("%m月%d日")
+        titles = [
+            f"今天这{len(news_items)}个财经信号，散户必看‼️",
+            f"不看后悔！{date_str}财经速报",
+            f"普通人必须知道的{len(news_items)}件财经大事"
+        ]
+        items_text = "\n".join([f"✅ {n['title'][:28]}" for n in news_items[:6]])
+        tags = "#财经干货 #投资理财 #股市分析 #财经科普 #理财入门 #今日财经"
+        return f"""===封面标题选项===
+标题A：{titles[0]}
+标题B：{titles[1]}
+标题C：{titles[2]}
+
+===正文===
+姐妹们，今天整理了{len(news_items)}条重要财经信息，建议收藏～
+
+📌 今日财经速知
+{items_text}
+
+💡 最值得关注的是第一条，背后逻辑值得好好研究。
+
+你们平时怎么关注财经新闻的？评论区聊聊～
+
+===话题标签===
+{tags}
+==="""
+
+    def _generate_fallback_weibo(self, news_items: List[Dict]) -> str:
+        """微博内容备用生成"""
+        news = news_items[0] if news_items else {}
+        date_str = datetime.now().strftime("%m月%d日")
+        return f"""版本A（强立场型）：
+#财经观察# 今天{date_str}这条消息值得认真对待：{news.get('title', '重要财经信息')}。我判断这件事的影响比表面看起来更深远。市场往往反应慢半拍，而那半拍，就是机会和风险之间的距离。你们怎么看？
+
+版本B（数据洞察型）：
+#每日财经# {news.get('title', '重要财经信息')}——表面是个行业新闻，但你仔细想想，它背后的逻辑是什么？谁在受益，谁在承压？财经新闻从来都有两层意思，第一层是新闻，第二层才是信号。
+
+版本C（问题引导型）：
+今天一个问题想问大家：{news.get('title', '重要财经信息')}——这件事发生之后，你认为接下来最先受影响的会是哪个板块？说说你的判断，不用太谦虚。
+
+[适合发布时间：收盘后18-21点] [预计互动类型：评论+观点交锋]"""
+
+    def _generate_fallback_moments(self, news_items: List[Dict]) -> str:
+        """朋友圈文案备用生成"""
+        news = news_items[0] if news_items else {}
+        return f"""版本A（事件感悟型）：
+今天看到一件事，{news.get('title', '财经重要信息')}。第一眼觉得这只是个普通新闻，但仔细想想，它背后的逻辑值得好好琢磨。很多时候，真正的信号都藏在"不重要的新闻"里。
+
+版本B（反思提问型）：
+一个问题：你有多久没认真研究过自己的资产配置了？今天{news.get('title', '一条财经新闻')}让我想到这个。不一定要做什么，但不能完全不思考。"""
 
 
 # 全局实例

@@ -90,11 +90,24 @@ createApp({
                 { key: 'deep_dive', label: '📄 深度长文' },
                 { key: 'ppt', label: '🖥️ PPT脚本' },
                 { key: 'flash_report', label: '⚡ 快报速评' },
+                { key: 'douyin', label: '🎬 抖音' },
+                { key: 'xiaohongshu', label: '📕 小红书' },
+                { key: 'weibo', label: '💬 微博' },
+                { key: 'moments', label: '👥 朋友圈' },
             ],
+
+            // 抖音时长选项
+            douyinDuration: 30,
+            douyinDurationOptions: [15, 30, 60],
 
             // 信号分析结果
             newsSignals: null,
             loadingSignals: false,
+
+            // 合规检查结果
+            complianceResult: null,
+            loadingCompliance: false,
+            showCompliancePanel: false,
         };
     },
 
@@ -133,6 +146,10 @@ createApp({
                 deep_dive: '📄 深度长文（原创研究版）',
                 ppt: '🖥️ PPT演讲脚本',
                 flash_report: '⚡ 快报速评（社媒直发版）',
+                douyin: `🎬 抖音口播稿（${this.douyinDuration}秒版）`,
+                xiaohongshu: '📕 小红书图文（封面+干货+话题）',
+                weibo: '💬 微博内容（3个版本）',
+                moments: '👥 朋友圈文案（2个版本）',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -342,7 +359,7 @@ createApp({
                     body: JSON.stringify({
                         news_ids: this.selectedNews,
                         content_type: type,
-                        duration: this.duration,
+                        duration: type === 'douyin' ? this.douyinDuration : this.duration,
                         style: this.style,
                     }),
                 });
@@ -416,12 +433,40 @@ createApp({
             this.activeResultTab = tab;
             this.resultType = tab;
             this.editingContent = false;
-            if (this.allResults) {
-                if (tab === 'stream_script') this.result = this.allResults.stream_script;
-                else if (tab === 'article') this.result = this.allResults.article;
-                else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
-                else if (tab === 'ppt') this.result = this.allResults.ppt;
-                else if (tab === 'flash_report') this.result = this.allResults.flash_report;
+            this.complianceResult = null;
+            this.showCompliancePanel = false;
+            if (this.allResults && this.allResults[tab] !== undefined) {
+                this.result = this.allResults[tab];
+            }
+        },
+
+        // 合规安全检查
+        async checkCompliance() {
+            const content = this.editingContent ? this.editableContent : this.displayContent;
+            if (!content) {
+                this.showToastMessage('没有内容可以检查', 'warning');
+                return;
+            }
+            this.loadingCompliance = true;
+            this.complianceResult = null;
+            this.showCompliancePanel = true;
+            try {
+                const response = await fetch(`${API_BASE}/api/compliance/check`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content }),
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                this.complianceResult = await response.json();
+                const level = this.complianceResult.risk_level;
+                const emoji = level === '高风险' ? '🔴' : level === '中风险' ? '🟡' : level === '低风险' ? '🟠' : '🟢';
+                this.showToastMessage(`${emoji} 合规检查：${level}，发现 ${this.complianceResult.risk_count} 处风险词`, level === '高风险' ? 'error' : 'info');
+            } catch (error) {
+                console.error('合规检查失败:', error);
+                this.showToastMessage('❌ 合规检查失败', 'error');
+                this.showCompliancePanel = false;
+            } finally {
+                this.loadingCompliance = false;
             }
         },
 
@@ -519,6 +564,10 @@ createApp({
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
                 ppt: `PPT脚本_${this.getDateTimeString()}.md`,
                 flash_report: `快报速评_${this.getDateTimeString()}.txt`,
+                douyin: `抖音口播稿_${this.getDateTimeString()}.txt`,
+                xiaohongshu: `小红书图文_${this.getDateTimeString()}.txt`,
+                weibo: `微博内容_${this.getDateTimeString()}.txt`,
+                moments: `朋友圈文案_${this.getDateTimeString()}.txt`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -541,6 +590,10 @@ createApp({
                 deep_dive: '深度长文',
                 ppt: 'PPT脚本',
                 flash_report: '快报速评',
+                douyin: '抖音口播稿',
+                xiaohongshu: '小红书图文',
+                weibo: '微博内容',
+                moments: '朋友圈文案',
             };
             const text = typeof content === 'string'
                 ? content
@@ -601,6 +654,21 @@ createApp({
         // 工具方法
         getDateTimeString() {
             return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        },
+
+        async copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                this.showToastMessage('✅ 已复制到剪贴板', 'success');
+            } catch (e) {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                this.showToastMessage('✅ 已复制', 'success');
+            }
         },
 
         showToastMessage(message, type = 'info') {

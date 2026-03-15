@@ -1355,6 +1355,237 @@ body {
     }
 }
 
+/* ==================== 短视频平台格式区块 ==================== */
+.shortform-section {
+    margin-top: 8px;
+    margin-bottom: 16px;
+    border: 1.5px dashed #e9d5ff;
+    border-radius: var(--radius);
+    padding: 12px;
+    background: linear-gradient(135deg, #fdf4ff 0%, #f5f3ff 100%);
+}
+
+.shortform-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.shortform-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #7c3aed;
+    letter-spacing: 0.3px;
+}
+
+.douyin-duration-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.douyin-dur-label {
+    font-size: 11px;
+    color: #6b7280;
+}
+
+.dur-btn {
+    padding: 2px 8px;
+    border: 1px solid #d8b4fe;
+    border-radius: 10px;
+    background: white;
+    font-size: 11px;
+    cursor: pointer;
+    color: #7c3aed;
+    transition: all 0.15s;
+}
+
+.dur-btn.active {
+    background: #7c3aed;
+    color: white;
+    border-color: #7c3aed;
+}
+
+.dur-btn:hover:not(.active) {
+    background: #f3e8ff;
+}
+
+.shortform-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.gen-douyin { border-color: #fb7185; background: #fff1f2; }
+.gen-douyin:hover:not(:disabled) { border-color: #e11d48; background: #ffe4e6; transform: translateY(-1px); }
+
+.gen-xhs { border-color: #f97316; background: #fff7ed; }
+.gen-xhs:hover:not(:disabled) { border-color: #ea580c; background: #ffedd5; transform: translateY(-1px); }
+
+.gen-weibo { border-color: #f59e0b; background: #fffbeb; }
+.gen-weibo:hover:not(:disabled) { border-color: #d97706; background: #fef3c7; transform: translateY(-1px); }
+
+.gen-moments { border-color: #10b981; background: #ecfdf5; }
+.gen-moments:hover:not(:disabled) { border-color: #059669; background: #d1fae5; transform: translateY(-1px); }
+
+/* ==================== 合规检查面板 ==================== */
+.btn-compliance {
+    background: #fef9c3;
+    border-color: #fde047;
+    color: #854d0e;
+}
+
+.btn-compliance:hover:not(:disabled) {
+    background: #fef08a;
+    border-color: #facc15;
+}
+
+.compliance-panel {
+    margin: 12px 0;
+    border: 1.5px solid #fde047;
+    border-radius: 8px;
+    background: #fffce8;
+    overflow: hidden;
+}
+
+.compliance-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: #fefce8;
+    border-bottom: 1px solid #fde047;
+}
+
+.compliance-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #854d0e;
+    flex: 1;
+}
+
+.compliance-badge {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.badge-danger { background: #fee2e2; color: #dc2626; }
+.badge-warning { background: #fef9c3; color: #ca8a04; }
+.badge-low { background: #ffedd5; color: #ea580c; }
+.badge-safe { background: #dcfce7; color: #16a34a; }
+
+.compliance-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #9ca3af;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+}
+
+.compliance-close:hover { background: #f3f4f6; color: #374151; }
+
+.compliance-safe {
+    padding: 14px;
+    color: #16a34a;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.compliance-risks {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.risk-item {
+    border-radius: 6px;
+    padding: 10px 12px;
+    border: 1px solid transparent;
+}
+
+.risk-high { background: #fef2f2; border-color: #fca5a5; }
+.risk-medium { background: #fffbeb; border-color: #fde68a; }
+.risk-low { background: #fff7ed; border-color: #fed7aa; }
+
+.risk-item-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.risk-term {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.risk-level-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    background: rgba(0,0,0,0.07);
+    color: #374151;
+}
+
+.risk-desc {
+    font-size: 12px;
+    color: #6b7280;
+    margin-bottom: 4px;
+}
+
+.risk-suggestion {
+    font-size: 12px;
+    color: #374151;
+}
+
+.risk-suggestion strong { color: #059669; }
+
+.compliance-disclaimer {
+    padding: 10px 14px;
+    background: #f0fdf4;
+    border-top: 1px solid #bbf7d0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.disclaimer-label {
+    font-size: 12px;
+    color: #166534;
+    font-weight: 600;
+}
+
+.disclaimer-text {
+    font-size: 12px;
+    color: #374151;
+    flex: 1;
+}
+
+.btn-copy-disclaimer {
+    padding: 3px 10px;
+    border: 1px solid #4ade80;
+    border-radius: 4px;
+    background: white;
+    font-size: 11px;
+    cursor: pointer;
+    color: #15803d;
+    white-space: nowrap;
+}
+
+.btn-copy-disclaimer:hover { background: #dcfce7; }
+
 @media (max-width: 640px) {
     .header .container {
         gap: 10px;

@@ -207,7 +207,7 @@
                         </transition>
                     </div>
 
-                    <!-- 生成按钮组 -->
+                    <!-- 生成按钮组：长内容 -->
                     <div class="generate-buttons">
                         <button
                             @click="generateContent('stream_script')"
@@ -263,6 +263,60 @@
                             <span class="text">全部生成</span>
                             <span class="gen-hint">四合一</span>
                         </button>
+                    </div>
+
+                    <!-- 短视频平台格式包 -->
+                    <div class="shortform-section">
+                        <div class="shortform-header">
+                            <span class="shortform-label">🚀 短视频 / 社媒平台</span>
+                            <div class="douyin-duration-bar" title="抖音口播稿时长">
+                                <span class="douyin-dur-label">抖音：</span>
+                                <button
+                                    v-for="d in douyinDurationOptions"
+                                    :key="d"
+                                    @click="douyinDuration = d"
+                                    :class="['dur-btn', { active: douyinDuration === d }]"
+                                >{{ d }}秒</button>
+                            </div>
+                        </div>
+                        <div class="shortform-buttons">
+                            <button
+                                @click="douyinDuration = douyinDuration; generateContent('douyin')"
+                                :disabled="selectedCount === 0 || generating"
+                                class="gen-btn gen-douyin"
+                            >
+                                <span class="icon">🎬</span>
+                                <span class="text">抖音口播</span>
+                                <span class="gen-hint">{{ douyinDuration }}秒版</span>
+                            </button>
+                            <button
+                                @click="generateContent('xiaohongshu')"
+                                :disabled="selectedCount === 0 || generating"
+                                class="gen-btn gen-xhs"
+                            >
+                                <span class="icon">📕</span>
+                                <span class="text">小红书</span>
+                                <span class="gen-hint">图文+标签</span>
+                            </button>
+                            <button
+                                @click="generateContent('weibo')"
+                                :disabled="selectedCount === 0 || generating"
+                                class="gen-btn gen-weibo"
+                            >
+                                <span class="icon">💬</span>
+                                <span class="text">微博</span>
+                                <span class="gen-hint">3个版本</span>
+                            </button>
+                            <button
+                                @click="generateContent('moments')"
+                                :disabled="selectedCount === 0 || generating"
+                                class="gen-btn gen-moments"
+                            >
+                                <span class="icon">👥</span>
+                                <span class="text">朋友圈</span>
+                                <span class="gen-hint">2个版本</span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- 信号分析面板（Reportify RAG思路） -->
@@ -323,6 +377,15 @@
                                 <button @click="copyResult" class="btn-small">📋 复制</button>
                                 <button v-if="resultType === 'article'" @click="copyRichText" class="btn-small btn-wechat" title="复制为富文本，可直接粘贴进微信编辑器">📄 复制HTML</button>
                                 <button @click="downloadResult" class="btn-small">⬇️ 下载</button>
+                                <button
+                                    @click="checkCompliance"
+                                    :disabled="loadingCompliance"
+                                    class="btn-small btn-compliance"
+                                    title="合规风险检测，避免踩监管红线"
+                                >
+                                    <span v-if="loadingCompliance">⏳ 检查中</span>
+                                    <span v-else>🛡️ 合规检查</span>
+                                </button>
                                 <button @click="closeResult" class="btn-small btn-close">✕</button>
                             </div>
                         </div>
@@ -335,6 +398,56 @@
                             ></textarea>
                             <pre v-else>{{ displayContent }}</pre>
                         </div>
+
+                        <!-- 合规检查结果面板 -->
+                        <div v-if="showCompliancePanel && complianceResult" class="compliance-panel">
+                            <div class="compliance-header">
+                                <span class="compliance-title">
+                                    🛡️ 合规检查结果
+                                </span>
+                                <span
+                                    :class="['compliance-badge', {
+                                        'badge-danger': complianceResult.risk_level === '高风险',
+                                        'badge-warning': complianceResult.risk_level === '中风险',
+                                        'badge-low': complianceResult.risk_level === '低风险',
+                                        'badge-safe': complianceResult.risk_level === '无风险',
+                                    }]"
+                                >{{ complianceResult.risk_level }}</span>
+                                <button @click="showCompliancePanel = false" class="compliance-close">✕</button>
+                            </div>
+
+                            <div v-if="complianceResult.risk_count === 0" class="compliance-safe">
+                                ✅ 未发现明显合规风险词，内容可以发布。
+                            </div>
+                            <div v-else class="compliance-risks">
+                                <div
+                                    v-for="risk in complianceResult.risks"
+                                    :key="risk.term"
+                                    :class="['risk-item', {
+                                        'risk-high': risk.level === '高风险',
+                                        'risk-medium': risk.level === '中风险',
+                                        'risk-low': risk.level === '低风险',
+                                    }]"
+                                >
+                                    <div class="risk-item-header">
+                                        <span class="risk-term">「{{ risk.term }}」</span>
+                                        <span class="risk-level-tag">{{ risk.level }}</span>
+                                    </div>
+                                    <div class="risk-desc">{{ risk.description }}</div>
+                                    <div class="risk-suggestion">💡 建议替换为：<strong>「{{ risk.suggestion }}」</strong></div>
+                                </div>
+                            </div>
+
+                            <div v-if="complianceResult.disclaimer_needed" class="compliance-disclaimer">
+                                <span class="disclaimer-label">⚠️ 建议添加免责声明：</span>
+                                <span class="disclaimer-text">{{ complianceResult.suggested_disclaimer }}</span>
+                                <button
+                                    @click="copyToClipboard(complianceResult.suggested_disclaimer)"
+                                    class="btn-copy-disclaimer"
+                                >复制</button>
+                            </div>
+                        </div>
+
                         <div class="result-footer">
                             <span class="word-count">📊 {{ wordCount }} 字</span>
                             <span class="read-time">⏱ 约 {{ readTime }} 分钟阅读</span>
