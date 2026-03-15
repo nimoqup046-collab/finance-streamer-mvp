@@ -92,6 +92,7 @@ createApp({
                 { key: 'stream_script', label: '📝 直播稿' },
                 { key: 'article', label: '📱 公众号' },
                 { key: 'deep_dive', label: '📄 深度长文' },
+                { key: 'ppt_script', label: '🖥️ PPT脚本' },
             ],
         };
     },
@@ -126,9 +127,10 @@ createApp({
 
         resultTitle() {
             const titles = {
-                stream_script: '📝 直播稿',
-                article: '📱 公众号文章',
-                deep_dive: '📄 深度长文',
+                stream_script: '📝 直播稿（刘润×小Lin说融合风格）',
+                article: '📱 公众号文章（深度好文版）',
+                deep_dive: '📄 深度长文（原创研究版）',
+                ppt_script: '🖥️ PPT演讲脚本',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -423,6 +425,7 @@ createApp({
             this.saveToHistory('stream_script', data.stream_script);
             if (data.article) this.saveToHistory('article', data.article);
             if (data.deep_dive) this.saveToHistory('deep_dive', data.deep_dive);
+            if (data.ppt_script) this.saveToHistory('ppt_script', data.ppt_script);
         },
 
         // 生成内容
@@ -543,6 +546,7 @@ createApp({
                             this.saveToHistory('stream_script', event.results.stream_script);
                             this.saveToHistory('article', event.results.article);
                             this.saveToHistory('deep_dive', event.results.deep_dive);
+                            if (event.results.ppt_script) this.saveToHistory('ppt_script', event.results.ppt_script);
                         },
                         error: (event) => {
                             throw new Error(event.message || '流式生成失败');
@@ -621,6 +625,7 @@ createApp({
                 if (tab === 'stream_script') this.result = this.allResults.stream_script;
                 else if (tab === 'article') this.result = this.allResults.article;
                 else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
+                else if (tab === 'ppt_script') this.result = this.allResults.ppt_script;
             }
         },
 
@@ -690,6 +695,7 @@ createApp({
                 stream_script: `直播稿_${this.getDateTimeString()}.txt`,
                 article: `公众号文章_${this.getDateTimeString()}.md`,
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
+                ppt_script: `PPT脚本_${this.getDateTimeString()}.md`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -710,6 +716,7 @@ createApp({
                 stream_script: '直播稿',
                 article: '公众号文章',
                 deep_dive: '深度长文',
+                ppt_script: 'PPT脚本',
             };
             const text = typeof content === 'string'
                 ? content

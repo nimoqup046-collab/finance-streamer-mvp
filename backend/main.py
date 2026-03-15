@@ -63,10 +63,11 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 # 请求模型
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive
+    content_type: str  # stream_script, article, deep_dive, ppt_script, all
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
+    focus_topic: Optional[str] = ""
 
 class NewsItem(BaseModel):
     id: str
@@ -271,11 +272,12 @@ async def search_news(q: str = Query(..., min_length=1, description="搜索关�
 # 生成内容
 @app.post("/api/generate", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_content(request: GenerateRequest):
-    """生成指定类型的内容"""
+    """生成指定类型的内容。"""
     selected_news = await _resolve_selected_news(request.news_ids)
+    requested_type = "ppt_script" if request.content_type == "ppt" else request.content_type
 
     try:
-        if request.content_type == "stream_script":
+        if requested_type == "stream_script":
             content = await generator.generate_stream_script(
                 selected_news,
                 duration=request.duration or 30,
@@ -288,10 +290,11 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        elif request.content_type == "article":
+        if requested_type == "article":
             result = await generator.generate_article(
                 selected_news,
-                title=request.title or ""
+                title=request.title or "",
+                focus_topic=request.focus_topic or "",
             )
             return {
                 "type": "article",
@@ -299,8 +302,11 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        elif request.content_type == "deep_dive":
-            content = await generator.generate_deep_dive(selected_news)
+        if requested_type == "deep_dive":
+            content = await generator.generate_deep_dive(
+                selected_news,
+                focus_topic=request.focus_topic or "",
+            )
             return {
                 "type": "deep_dive",
                 "content": content,
@@ -308,8 +314,19 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        else:
-            raise HTTPException(status_code=400, detail="不支持的内容类型")
+        if requested_type == "ppt_script":
+            content = await generator.generate_ppt_script(
+                selected_news,
+                focus_topic=request.focus_topic or request.title or "",
+            )
+            return {
+                "type": "ppt_script",
+                "content": content,
+                "word_count": len(content),
+                "generated_at": datetime.now().isoformat()
+            }
+
+        raise HTTPException(status_code=400, detail="不支持的内容类型")
 
     except HTTPException:
         raise
@@ -320,22 +337,23 @@ async def generate_content(request: GenerateRequest):
 # 批量生成（一键生成全部）
 @app.post("/api/generate/all", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_all(news_ids: List[str] = Body(...)):
-    """一键生成所有类型的内容"""
+    """一键生成所有类型的内容。"""
     selected_news = await _resolve_selected_news(news_ids)
 
     try:
-        stream_script, article, deep_dive = await asyncio.gather(
+        stream_script, article, deep_dive, ppt_script = await asyncio.gather(
             generator.generate_stream_script(selected_news),
             generator.generate_article(selected_news),
             generator.generate_deep_dive(selected_news),
+            generator.generate_ppt_script(selected_news),
         )
-        results = {
+        return {
             "stream_script": stream_script,
             "article": article,
             "deep_dive": deep_dive,
+            "ppt_script": ppt_script,
             "generated_at": datetime.now().isoformat()
         }
-        return results
     except Exception as e:
         logger.error("批量生成失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
@@ -367,17 +385,35 @@ async def generate_ppt(news_ids: List[str] = Body(...)):
 async def generate_stream(request: Request, payload: GenerateRequest):
     """通过 SSE 流式返回生成进度和内容。"""
     selected_news = await _resolve_selected_news(payload.news_ids)
+    requested_type = "ppt_script" if payload.content_type == "ppt" else payload.content_type
 
     async def event_stream():
         started = time.monotonic()
-        logger.info("SSE generation started type=%s news_count=%s", payload.content_type, len(selected_news))
+        logger.info("SSE generation started type=%s news_count=%s", requested_type, len(selected_news))
         try:
             yield _sse("status", {"step": 0, "text": "准备生成", "tip": "正在校验新闻与参数"})
 
-            if payload.content_type == "all":
+            if requested_type == "all":
                 yield _sse("status", {"step": 1, "text": "并行生成中", "tip": "直播稿流式输出，其他内容后台并行生成"})
-                article_task = asyncio.create_task(generator.generate_article(selected_news, title=payload.title or ""))
-                deep_task = asyncio.create_task(generator.generate_deep_dive(selected_news))
+                article_task = asyncio.create_task(
+                    generator.generate_article(
+                        selected_news,
+                        title=payload.title or "",
+                        focus_topic=payload.focus_topic or "",
+                    )
+                )
+                deep_task = asyncio.create_task(
+                    generator.generate_deep_dive(
+                        selected_news,
+                        focus_topic=payload.focus_topic or "",
+                    )
+                )
+                ppt_script_task = asyncio.create_task(
+                    generator.generate_ppt_script(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
+                )
 
                 raw_script = []
                 async for chunk in generator.stream_stream_script(
@@ -400,17 +436,21 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                 deep_dive = await deep_task
                 yield _sse("result", {"result_type": "deep_dive", "result": deep_dive})
 
+                ppt_script = await ppt_script_task
+                yield _sse("result", {"result_type": "ppt_script", "result": ppt_script})
+
                 results = {
                     "stream_script": stream_script,
                     "article": article,
                     "deep_dive": deep_dive,
+                    "ppt_script": ppt_script,
                     "generated_at": datetime.now().isoformat(),
                 }
                 yield _sse("complete", {"type": "all", "results": results})
             else:
                 yield _sse("status", {"step": 1, "text": "开始生成", "tip": "正在向模型请求内容"})
 
-                if payload.content_type == "stream_script":
+                if requested_type == "stream_script":
                     raw_script = []
                     async for chunk in generator.stream_stream_script(
                         selected_news,
@@ -424,16 +464,28 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         yield _sse("chunk", {"result_type": "stream_script", "delta": chunk})
 
                     result = generator._format_stream_script("".join(raw_script), selected_news)
-                elif payload.content_type == "article":
-                    result = await generator.generate_article(selected_news, title=payload.title or "")
-                elif payload.content_type == "deep_dive":
-                    result = await generator.generate_deep_dive(selected_news)
+                elif requested_type == "article":
+                    result = await generator.generate_article(
+                        selected_news,
+                        title=payload.title or "",
+                        focus_topic=payload.focus_topic or "",
+                    )
+                elif requested_type == "deep_dive":
+                    result = await generator.generate_deep_dive(
+                        selected_news,
+                        focus_topic=payload.focus_topic or "",
+                    )
+                elif requested_type == "ppt_script":
+                    result = await generator.generate_ppt_script(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
                 else:
                     raise HTTPException(status_code=400, detail="不支持的流式内容类型")
 
-                yield _sse("complete", {"type": payload.content_type, "result": result})
+                yield _sse("complete", {"type": requested_type, "result": result})
 
-            logger.info("SSE generation finished type=%s in %.2fs", payload.content_type, time.monotonic() - started)
+            logger.info("SSE generation finished type=%s in %.2fs", requested_type, time.monotonic() - started)
         except HTTPException as e:
             yield _sse("error", {"message": e.detail})
         except Exception as e:
@@ -455,6 +507,7 @@ async def get_status():
             "article": True,
             "deep_dive": True,
             "ppt": True,
+            "ppt_script": True,
             "infographic": False  # 待开发
         }
     }

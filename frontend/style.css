@@ -810,6 +810,9 @@ body {
 .gen-deep    { border-color: #c4b5fd; }
 .gen-deep:hover:not(:disabled)    { border-color: var(--purple); background: var(--purple-light); }
 
+.gen-ppt     { border-color: #f9a8d4; }
+.gen-ppt:hover:not(:disabled)     { border-color: #ec4899; background: #fdf2f8; }
+
 .gen-all {
     grid-column: 1 / -1;
     border-color: #fcd34d;

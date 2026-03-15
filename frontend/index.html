@@ -245,6 +245,15 @@
                             <span class="gen-hint">3000+字</span>
                         </button>
                         <button
+                            @click="generateContent('ppt_script')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-ppt"
+                        >
+                            <span class="icon">🖥️</span>
+                            <span class="text">PPT脚本</span>
+                            <span class="gen-hint">逐页逐字稿</span>
+                        </button>
+                        <button
                             @click="generateAll"
                             :disabled="selectedCount === 0 || generating"
                             class="gen-btn gen-all"
