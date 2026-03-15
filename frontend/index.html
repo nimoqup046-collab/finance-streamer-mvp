@@ -254,13 +254,22 @@
                             <span class="gen-hint">逐页逐字稿</span>
                         </button>
                         <button
+                            @click="generateContent('flash_report')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-flash"
+                        >
+                            <span class="icon">⚡</span>
+                            <span class="text">快报速评</span>
+                            <span class="gen-hint">社媒速发</span>
+                        </button>
+                        <button
                             @click="generateAll"
                             :disabled="selectedCount === 0 || generating"
                             class="gen-btn gen-all"
                         >
                             <span class="icon">📦</span>
                             <span class="text">全部生成</span>
-                            <span class="gen-hint">三合一</span>
+                            <span class="gen-hint">四合一</span>
                         </button>
                         <button
                             @click="generatePpt"

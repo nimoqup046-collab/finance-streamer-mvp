@@ -89,7 +89,46 @@ PPT_SYSTEM_PROMPT = """你是一位顶级商业演讲顾问，擅长把财经判
 - 可视化建议
 """
 
+FLASH_REPORT_SYSTEM_PROMPT = """你是一位擅长写“快报速评”的财经编辑。
+
+【写作目标】
+- 让读者在30秒内抓住当天最重要的财经信号
+- 不是罗列新闻，而是快速提炼“发生了什么、为什么重要、普通人该怎么理解”
+- 适合直接发微博、朋友圈、公众号短内容或投研群简报
+
+【表达原则】
+- 短句、高密度、强判断
+- 不写空话，不写套话
+- 读完后能马上复述给别人
+
+【强制要求】
+- 开头先给一句最重要判断
+- 每条要点都要讲“所以呢”
+- 至少有一个反直觉洞察
+- 结尾给一句可截图传播的短金句
+"""
+
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
+
+QUALITY_CONTROL_RULES = """
+【质量控制】
+- 第一屏原则：前3段内必须给出最重要判断，不能先铺背景再给结论。
+- 主线原则：不能把新闻一条条念过去，必须把它们串成同一条更大的主线。
+- 洞察原则：至少出现一个反直觉判断，并说明为什么市场容易看错。
+- 因果原则：每个核心观点都要讲清楚触发因素、传导链条、受益方、受损方。
+- 结果原则：必须落到“接下来怎么看/怎么验证/怎么行动”，不能停在现象描述。
+- 表达原则：禁止正确的废话，少用抽象口号，多用具体数字、场景和生活化比喻。
+"""
+
+FORBIDDEN_EMPTY_PHRASES = [
+    "建议关注",
+    "需要观察",
+    "影响深远",
+    "可能有影响",
+    "存在不确定性",
+    "值得期待",
+    "不排除",
+]
 
 
 class ContentGenerator:
@@ -148,21 +187,43 @@ class ContentGenerator:
         categories = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
         return {
             "goal": goal,
+            "thesis": "今天最值得抓住的不是单条新闻，而是主线预期开始发生边际变化。",
             "lead_angle": f"今日最值得抓住的主线是{categories[0] if categories else '财经'}方向的预期变化，而不是简单复述新闻。",
+            "opening_hook": "如果今晚只能记住一句话，那就是市场开始重新给真正的主线定价。",
+            "contrarian_take": "大多数人盯着标题热度，但真正重要的是预期差和验证节奏。",
             "core_conflicts": [
                 "政策预期与市场定价是否错位",
                 "短期情绪催化能否转化为中期基本面",
                 "投资者该关注主线还是防守风险",
             ],
+            "causal_chain": [
+                "事件发生 -> 市场重新修正预期 -> 资金重新选择方向",
+                "情绪催化 -> 主题交易升温 -> 需要基本面验证接力",
+                "新闻热度上升 -> 定价更快反映 -> 预期差反而迅速收敛",
+            ],
+            "winners_losers": {
+                "winners": ["更贴近主线的龙头资产", "先拿到验证数据的方向"],
+                "losers": ["只靠情绪催化的跟风标的", "逻辑经不起验证的主题概念"],
+            },
             "market_pulse": [
                 "先判断事件影响的是估值、盈利还是风险偏好",
                 "区分主题交易与基本面改善，不混为一谈",
                 "判断后续该看哪些验证指标，而不是被单日情绪带偏",
             ],
+            "verification_signals": [
+                "政策是否有后续细则或执行节奏",
+                "资金是否连续流向同一主线而非一日游",
+                "业绩、订单、价格或宏观数据能否跟上验证",
+            ],
             "audience_takeaways": [
                 "今天最重要的不是新闻数量，而是主线和节奏",
                 "真正值得追踪的是后续验证指标，而不是单日情绪",
                 "区分噪音和主线，别被标题热闹带偏",
+            ],
+            "article_angles": [
+                "这件事真正改变的是哪条预期",
+                "哪些人会先受益，哪些人会最先承压",
+                "普通投资者最容易误判的点在哪里",
             ],
             "slide_outline": [
                 {
@@ -204,10 +265,20 @@ class ContentGenerator:
 请输出严格 JSON，不要 Markdown，不要解释。结构如下：
 {{
   "goal": "一句话写作目标",
+  "thesis": "一句最硬的总判断，适合直接做开场结论",
   "lead_angle": "最值得展开的总论点，必须有判断",
+  "opening_hook": "适合直播稿/文章导语的开场钩子，必须具体",
+  "contrarian_take": "一个反直觉但能自圆其说的判断",
   "core_conflicts": ["3条关键矛盾/预期差"],
+  "causal_chain": ["3条因果链，写清从事件到市场定价的传导"],
+  "winners_losers": {{
+    "winners": ["2-3类受益方"],
+    "losers": ["2-3类受损方"]
+  }},
   "market_pulse": ["3条市场脉搏判断"],
+  "verification_signals": ["3条未来最该盯的验证指标"],
   "audience_takeaways": ["3条读者最该带走的结论"],
+  "article_angles": ["3个适合写公众号文章的小节角度"],
   "slide_outline": [
     {{
       "headline": "适合做PPT页标题的一句话",
@@ -237,8 +308,15 @@ class ContentGenerator:
         categories = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
         category_str = "、".join(categories[:4])
         time_per_news = max(3, duration // max(len(news_items), 1))
+        thesis = editorial_brief.get("thesis", editorial_brief.get("lead_angle", ""))
+        opening_hook = editorial_brief.get("opening_hook", "")
+        contrarian_take = editorial_brief.get("contrarian_take", "")
         core_conflicts = "\n".join(f"- {item}" for item in editorial_brief.get("core_conflicts", []))
+        causal_chain = "\n".join(f"- {item}" for item in editorial_brief.get("causal_chain", []))
         market_pulse = "\n".join(f"- {item}" for item in editorial_brief.get("market_pulse", []))
+        winners = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("winners", []))
+        losers = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("losers", []))
+        verification_signals = "\n".join(f"- {item}" for item in editorial_brief.get("verification_signals", []))
         takeaways = "\n".join(f"- {item}" for item in editorial_brief.get("audience_takeaways", []))
 
         emotion_arc_section = ""
@@ -254,6 +332,17 @@ class ContentGenerator:
         return f"""【内容任务】
 请生成一份真正可上播的财经直播稿，而不是新闻摘要。
 
+{QUALITY_CONTROL_RULES.strip()}
+
+【今晚最重要的判断】
+{thesis or editorial_brief.get('lead_angle', '')}
+
+【推荐开场钩子】
+{opening_hook or '先用一个具体数字、反常识事实或市场误判切入'}
+
+【必须讲出的反直觉判断】
+{contrarian_take or '市场最容易误判的，不是新闻本身，而是它背后的定价逻辑。'}
+
 【编辑部主线】
 {editorial_brief.get('lead_angle', '')}
 
@@ -262,6 +351,18 @@ class ContentGenerator:
 
 【你必须融入的市场脉搏判断】
 {market_pulse or '- 没有额外补充'}
+
+【你必须讲清的因果链】
+{causal_chain or '- 从事件变化讲到市场如何重新定价'}
+
+【谁受益、谁受损】
+受益方：
+{winners or '- 受益方待结合内容判断'}
+受损方：
+{losers or '- 受损方待结合内容判断'}
+
+【明天最该盯的验证指标】
+{verification_signals or '- 暂无额外补充'}
 
 【观众最终要带走的结论】
 {takeaways or '- 没有额外补充'}
@@ -277,11 +378,11 @@ class ContentGenerator:
 {emotion_arc_section}
 
 【结构要求】
-1. 开场不要寒暄，第一段必须先给“今晚最重要的一句话判断”。
-2. 每条新闻必须包含：发生了什么、为什么是现在、影响谁、接下来怎么判断。
-3. 至少加入 1 个反直觉观点、1 个历史类比、3 个生活化比喻。
+1. 开场不要寒暄，前3段内必须完成：给判断、给原因、给观众为什么要听。
+2. 每条新闻必须回答：发生了什么、为什么是现在、影响谁、接下来怎么判断。
+3. 至少加入 1 个反直觉观点、1 个历史类比、2-3 个生活化比喻。
 4. 互动提问必须有信息含量，不是无意义暖场。
-5. 结尾必须总结主线、风险点、明日关注指标。
+5. 结尾必须总结主线、风险点、明日关注指标，并给出一句能被记住的收束判断。
 6. 可以加入[互动]、[留人钩子]、[揭晓悬念]、[情绪提示：...]等标记，但不要滥用。
 
 【硬性指标】
@@ -339,14 +440,40 @@ class ContentGenerator:
         )
         preferred_title = f"\n【标题方向偏好】\n{title}\n" if title else ""
         focus_hint = f"\n【重点聚焦】\n{focus_topic}\n" if focus_topic else ""
+        thesis = editorial_brief.get("thesis", editorial_brief.get("lead_angle", ""))
+        contrarian_take = editorial_brief.get("contrarian_take", "")
+        article_angles = "\n".join(f"- {item}" for item in editorial_brief.get("article_angles", []))
+        winners = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("winners", []))
+        losers = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("losers", []))
+        verification_signals = "\n".join(f"- {item}" for item in editorial_brief.get("verification_signals", []))
         prompt = f"""【内容任务】
 请写一篇让人读完就想转发的财经公众号长文。
 {preferred_title}{focus_hint}
+{QUALITY_CONTROL_RULES.strip()}
+
+【一句最硬的结论】
+{thesis}
+
 【总论点】
 {editorial_brief.get('lead_angle', '')}
 
+【最值得写进文章的反直觉判断】
+{contrarian_take or '大多数人盯着表面热闹，但真正影响市场的是更深层的主线变化。'}
+
 【必须回答的关键问题】
 {chr(10).join(f'- {item}' for item in editorial_brief.get('core_conflicts', []))}
+
+【推荐展开的小节角度】
+{article_angles or '- 暂无额外补充'}
+
+【谁会先受益、谁会先承压】
+受益方：
+{winners or '- 暂无额外补充'}
+受损方：
+{losers or '- 暂无额外补充'}
+
+【后续最该盯的验证指标】
+{verification_signals or '- 暂无额外补充'}
 
 【普通读者最该带走的结论】
 {chr(10).join(f'- {item}' for item in editorial_brief.get('audience_takeaways', []))}
@@ -356,12 +483,12 @@ class ContentGenerator:
 
 【写作要求】
 1. 必须提供3个标题备选：数字悬念型 / 反直觉型 / 读者利益型。
-2. 开篇不能从“今天市场”或“据报道”开始，要用具体场景、反常识事实或数字切入。
-3. 正文按“结论 -> 背景 -> 影响 -> 行动”来展开。
-4. 每一节都要写清：是什么、为什么、深层原因、明确判断。
-5. 结尾不能是“点赞关注”，而要给可执行动作或明确判断。
+2. 开篇不能从“今天市场”或“据报道”开始，要用具体场景、反常识事实或数字切入，并在前两段内亮出主判断。
+3. 正文按“结论 -> 背景 -> 深层原因 -> 影响 -> 行动”来展开。
+4. 每一节都要写清：是什么、为什么、深层原因、明确判断、验证指标。
+5. 结尾不能是“点赞关注”，而要给可执行动作、核心判断或下一步验证方法。
 6. 不能编造数据、机构观点或内幕。
-7. 可以有锋利判断，但必须能自圆其说。
+7. 可以有锋利判断，但必须能自圆其说；不要只写成新闻扩写或摘要拼盘。
 
 【篇幅】
 - 总字数不少于1800字
@@ -387,6 +514,66 @@ class ContentGenerator:
         except Exception as e:
             logger.error("Article generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_article(news_items)
+
+    async def generate_flash_report(self, news_items: List[Dict], focus_topic: str = "") -> str:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份可直接发布的财经快报速评，帮助读者30秒抓住主线和判断",
+            style="洞察",
+        )
+        thesis = editorial_brief.get("thesis", editorial_brief.get("lead_angle", ""))
+        contrarian_take = editorial_brief.get("contrarian_take", "")
+        verification_signals = "\n".join(f"- {item}" for item in editorial_brief.get("verification_signals", []))
+        takeaways = "\n".join(f"- {item}" for item in editorial_brief.get("audience_takeaways", []))
+        news_details = "\n".join([
+            f"{i+1}. 【{n.get('category', '财经')}】{n['title']}（{n['source']}）"
+            for i, n in enumerate(news_items[:5])
+        ])
+
+        prompt = f"""【快报速评任务】
+请输出一篇适合社媒/群发/早会速读的财经快报速评。
+
+{QUALITY_CONTROL_RULES.strip()}
+
+【一句最硬的结论】
+{thesis}
+
+【反直觉判断】
+{contrarian_take or '真正重要的不是表面热度，而是主线是否开始被重新定价。'}
+
+【素材新闻】
+{news_details}
+
+【普通读者最该带走的结论】
+{takeaways or '- 暂无额外补充'}
+
+【接下来最该盯的验证指标】
+{verification_signals or '- 暂无额外补充'}
+
+【输出结构】
+1. 开头：1句话直接给最重要判断
+2. 速评主体：按3-5个短段落写，每段都要说“这意味着什么”
+3. 结尾：一句短金句 + 1个下一步验证点
+
+【硬性要求】
+- 总字数控制在350-500字
+- 至少出现2个具体数字或时间点
+- 不能写成摘要拼盘
+- 不能使用“建议关注 / 需要观察 / 影响深远”之类空话
+- 结尾金句不超过18字，能被截图传播
+
+请直接输出快报速评正文，不要解释：
+"""
+        try:
+            response = await self._call_ai(
+                prompt,
+                max_tokens=1200,
+                system_prompt=FLASH_REPORT_SYSTEM_PROMPT,
+            )
+            return self._clean_generated_text(response)
+        except Exception as e:
+            logger.error("Flash report generation error: %s | %s", e, self._error_context())
+            return self._generate_fallback_flash_report(news_items)
 
     async def _analyze_news_outline(self, news_items: List[Dict], focus_topic: str, date_str: str) -> str:
         news_details = "\n".join([f"• {n['title']}（{n['source']}）" for n in news_items[:6]])
@@ -739,7 +926,23 @@ N+4. 记忆点与先行指标
     def _chunk_text(self, text: str, chunk_size: int = 120) -> List[str]:
         return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
+    def _clean_generated_text(self, content: str) -> str:
+        cleaned = (content or "").strip()
+        cleaned = re.sub(r"^\s*(好的|下面是|以下是)[：:\s]*", "", cleaned)
+        replacements = {
+            "建议关注": "重点看",
+            "需要观察": "下一步验证",
+            "可能有影响": "会直接影响",
+            "影响深远": "会重塑后续定价",
+            "存在不确定性": "仍待验证",
+        }
+        for src, dst in replacements.items():
+            cleaned = cleaned.replace(src, dst)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
     def _format_stream_script(self, content: str, news_items: List[Dict], duration: int = 30) -> str:
+        content = self._clean_generated_text(content)
         date_str = datetime.now().strftime("%Y年%m月%d日")
         weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][datetime.now().weekday()]
         return f"""
@@ -758,6 +961,7 @@ N+4. 记忆点与先行指标
 """
 
     def _format_article(self, content: str) -> Dict:
+        content = self._clean_generated_text(content)
         titles = []
         if "===标题选项===" in content:
             parts = content.split("===正文===")
@@ -852,6 +1056,22 @@ N+4. 记忆点与先行指标
         content += "## 核心判断\n\n把今天这些消息放在一起看，市场真正变化的是主线和预期差，而不只是热闹本身。\n\n"
         content += "*本文内容仅供参考，不构成投资建议。*\n"
         return {"titles": titles, "content": content, "html": self._markdown_to_html(content)}
+
+    def _generate_fallback_flash_report(self, news_items: List[Dict]) -> str:
+        lead = news_items[0] if news_items else {"title": "今日财经主线出现新变化", "source": "系统"}
+        lines = [
+            f"今天最重要的判断是：{lead['title'][:28]}，真正值得看的不是新闻热度，而是它背后的主线变化。",
+            "",
+        ]
+        for news in news_items[:4]:
+            lines.append(
+                f"【{news.get('category', '财经')}】{news['title']}\n"
+                f"这条消息来自{news['source']}，表面上是一条事件新闻，真正重要的是它会改变市场对后续节奏和验证指标的判断。"
+            )
+            lines.append("")
+        lines.append("一句话总结：看主线，不要只看热闹。")
+        lines.append("下一步重点看：政策跟进、资金连续性和基本面验证。")
+        return "\n".join(lines)
 
     def _generate_fallback_deep_dive(self, news_items: List[Dict]) -> str:
         topic = news_items[0]['title']
