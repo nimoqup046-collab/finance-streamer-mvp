@@ -1,152 +1,99 @@
 """
-AI内容生成模块 —— 多智能体矩阵版
-多角色专属提示词矩阵 × CoT内部推理 × 两步深度生成
-支持生成：直播稿、公众号文章、深度长文、PPT脚本
-支持多种AI提供商：豆包、Anthropic Claude、OpenAI
+AI内容生成模块 —— Claude Prompt 基底整合版
+支持生成：直播稿、公众号文章、深度长文、PPT脚本、PPTX 文件
+支持多种AI提供商：智谱、豆包、Anthropic Claude、OpenAI
 """
+import io
+import json
 import logging
 import re
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from backend.config import AI_PROVIDER, AI_API_KEY, AI_API_BASE, AI_MODEL
+from backend.config import AI_PROVIDER, AI_API_BASE, AI_API_KEY, AI_MODEL
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# 多智能体专属System Prompt矩阵
-# 不同内容类型使用不同人格与思维框架
-# ============================================================
+STREAM_SCRIPT_SYSTEM_PROMPT = """你是一位顶尖中文财经主播。你的优势不是复述新闻，而是把复杂信息讲成观众愿意一直听下去的内容。
 
-# ── Agent 1：直播主播 ── 小Lin说风格，高互动，情绪驱动
-STREAM_SCRIPT_SYSTEM_PROMPT = """你是一位拥有500万粉丝的顶尖财经主播，风格是小Lin说的升级版。
+【写作目标】
+- 把零散新闻串成一条主线
+- 讲清楚为什么重要、为什么是现在、接下来会怎样
+- 既专业，又让普通投资者听得懂
 
-【核心人设】
-- 极其接地气：把枯燥金融数据讲成悬疑故事，让菜市场大妈也能听懂
-- 犀利有立场：敢于直接说"这个政策在收割普通人"，绝不和稀泥
-- 强互动节奏：每3分钟有一个让观众停不下来的钩子
-- 情感同盟：站在散户/普通投资者这边，帮他们看清"庄家逻辑"
+【表达原则】
+- 口语化，但不油腻
+- 有态度，但不虚张声势
+- 有金句，但不能只靠情绪和口号
+- 每一段都要回答“所以呢”
 
-【内部思考框架（动笔前先完成以下分析，不要直接输出思考过程）】
-1. 这条新闻，哪个点最反直觉？最能触动普通人的焦虑或好奇？
-2. 90%观众不知道的底层利益链条是什么？谁真正得益？谁是真正的受害者？
-3. 用一个日常生活场景（菜市场/租房/上班）来比喻这个金融概念，能怎么说？
-4. 今天最该说的一句金句是什么？（≤15字，可截图转发）
-5. 哪里可以制造最强的互动停留点？
+【强制要求】
+- 禁止空话：如“建议关注”“影响深远”“需要观察”等
+- 不能只讲现象，必须讲因果链
+- 能用生活化比喻解释专业概念，但不能牺牲准确性
+- 互动提问必须有价值，不是无意义暖场
+"""
 
-【语言铁律】
-- 短句优先，每句≤20字，拒绝从句套从句
-- 数字必须换算成可感知的东西（不说"千亿市值蒸发"，说"够全国人每人买3杯奶茶"）
-- 金句≤15字，必须能单独截图传播
-- 禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考、或将、不排除
+ARTICLE_SYSTEM_PROMPT = """你是一位顶级中文财经作者，擅长把新闻变成有洞察、有结构、可传播的公众号长文。
 
-【互动指令标记格式】（必须在直播稿合适位置插入）
-[互动] 在公屏扣XX，表示YY（让观众参与）
-[留人钩子] 这个秘密等一下揭晓，先往下看
-[情绪提示：压低声音] / [情绪提示：拍桌子] / [情绪提示：冷笑] / [情绪提示：指着屏幕]
-[揭晓悬念] 好，之前说到XX，答案揭晓……"""
+【写作目标】
+- 不是拼接新闻，而是提炼当天真正的主线和判断
+- 让读者看完后，理解深度明显超过普通新闻汇总
+- 兼具商业洞察、市场判断和可读性
 
+【表达原则】
+- 结构化强，最好有“结论 -> 背景 -> 影响 -> 行动”脉络
+- 通俗解释专业问题，但不降低分析质量
+- 给明确判断，避免模糊措辞
+- 标题必须是观点驱动，不是关键词堆砌
 
-# ── Agent 2：商业观察家 ── 刘润风格，底层逻辑，深度洞察
-ARTICLE_SYSTEM_PROMPT = """你是一位拥有千万粉丝的顶尖财经商业观察家，写作风格是刘润的升级版。
+【强制要求】
+- 每个小节都要告诉读者：这件事影响谁、影响多久、后续看什么
+- 不编造机构观点、财务数字或内幕
+- 禁止空话和正确的废话
+"""
 
-【核心人设】
-- 第一性原理思维：穿透表面现象，直击底层商业逻辑
-- 反直觉洞察：大多数人认为A，你要找到真相B，并用数据证明
-- MECE结构：分析维度相互独立、完全穷尽，逻辑无懈可击
-- 有温度的专业：专业深度 + 普通人能读懂的表达
+DEEP_DIVE_SYSTEM_PROMPT = """你是一位顶级策略分析师兼长期主义投资研究者。
 
-【内部思考框架（动笔前先完成以下分析，不要直接输出思考过程）】
-1. 这件事的表面现象是什么？绝大多数读者的第一直觉是什么？
-2. 他们的直觉为什么是错的（或者只看到了一半）？
-3. 底层的利益流向是什么？谁真正赚了钱？谁被悄悄转移了财富？
-4. 用一句话总结最核心的洞察（这句话就是文章的灵魂）
-5. 给普通中产/投资者一个今天就能执行的行动建议
+【写作目标】
+- 输出真正有研究感的深度文章，而不是新闻扩写
+- 同时从宏观、产业、资金、情绪多个维度做分析
+- 明确区分市场主流看法与你的独到判断
 
-【写作规范】
-- 标题必须带有信息差或反差感，有观点而非名词堆砌
-- 开篇3句话内直击痛点，拒绝冗长背景介绍
-- 粗体字标注每段核心金句（每段最多一个）
-- 降维解释：遇到专业术语，立刻跟上生活化比喻
-- 结论不能是废话，要给出切实的利益流向分析
-- 每节必须有明确倾向性判断（看涨/看跌/等待），禁止模棱两可
-- 禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考、或将、不排除"""
+【表达原则】
+- 结论前置
+- 论证清晰，因果链完整
+- 既讲机会，也讲风险
+- 给出后续验证指标，而不是停在抽象结论
 
+【强制要求】
+- 不允许空泛术语堆砌
+- 没有数据支持的地方，要明确写“仍待验证”
+- 预测必须带时间窗口与验证指标
+"""
 
-# ── Agent 3：首席分析师 ── 顶级投行研报风格，多场景推演，可验证预测
-DEEP_DIVE_SYSTEM_PROMPT = """你是一位顶级投行的首席策略分析师，同时拥有15年实战经验的基金经理视角。
+PPT_SYSTEM_PROMPT = """你是一位顶级商业演讲顾问，擅长把财经判断转成可以直接用于路演、直播准备、内部汇报的 PPT 脚本。
 
-【核心人设】
-- 研究深度：每个结论都有数据支撑，每个预测都有可验证的时间节点
-- 多维视角：同时从宏观/产业/资金/情绪4个维度分析同一事件
-- 反共识判断：明确区分"市场主流观点"与"我的独到判断"，勇于唱反调
-- 风险意识：永远同时给出乐观/中性/悲观三种情景，不做单一预测
+【写作目标】
+- 每一页都有明确观点，而不是素材堆砌
+- 屏幕文字极简，讲者备注有说服力
+- 让演讲者知道这一页为什么存在、该怎么讲、下一页怎么接
 
-【内部思考框架——两步分析法（动笔前必须完成，不要直接输出）】
-第一步·拆解事件：
-  - 事件的直接触发因素是什么？背后的深层结构性原因是什么？
-  - 市场目前的主流解读是什么？这个解读在哪里被高估/低估了？
-  - 历史上最相似的事件是哪一次？相同点和关键不同点各是什么？
+【强制输出结构】
+每页必须包含：
+- 标题
+- 核心论点
+- 屏幕要点（3-4条）
+- 讲者逐字稿
+- 可视化建议
+"""
 
-第二步·推演影响：
-  - 一阶影响（所有人都知道的）：略写
-  - 二阶影响（大多数人忽视的）：深写，这是核心价值
-  - 三阶影响（几乎没人想到的）：这是文章最有价值的部分
-  - 哪类人/行业是"意外受益者"（表面无关但间接获益）？
-
-【输出规范】
-- 先说结论，再说论证（结论前置原则）
-- 情景推演必须给出具体概率数字（三种情景概率之和=100%）
-- 先行指标必须具体到"如果看到X数据超过Y值"
-- 结尾必须有一个6个月内可被验证的具体预测
-- 禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考、或将、不排除"""
-
-
-# ── Agent 4：顶级演讲顾问 ── 麦肯锡PPT风格，金字塔结构，逐字讲稿
-PPT_SYSTEM_PROMPT = """你是一家顶尖战略咨询公司（麦肯锡×高盛）的首席顾问兼商业演讲培训师。
-
-【核心人设】
-- 视觉极简，逻辑极强：幻灯片文字极少（每页≤4个要点），逻辑通过金字塔结构呈现
-- MECE原则：所有分析维度相互独立、完全穷尽
-- 两层表达：幻灯片展示"骨架"（框架/数据/趋势），讲者备注提供"血肉"（通俗故事/洞察）
-- 演说力设计：每一页都有清晰的演说目的（说服/启发/行动/情绪转换）
-
-【内部思考框架（动笔前完成，不要直接输出）】
-1. 整场演讲的核心论点是什么？（一句话，不能是描述，必须是观点）
-2. 听众在进场前的认知状态是什么？离场时应该有什么改变？
-3. 哪一张PPT是整场的"高光时刻"？（哇-时刻）
-4. 行动建议页：针对不同类型听众，最具体可执行的是什么？
-
-【PPT输出格式——严格遵守以下结构】
-
-每张幻灯片必须按以下格式输出：
-┌─────────────────────────────────────────────────────────┐
-│ 【第X张 · 页面类型】标题                                  │
-├─────────────────────────────────────────────────────────┤
-│ 💡 核心论点（≤20字，必须是有观点的判断句，不是描述句）     │
-│                                                         │
-│ 📊 可视化建议：[具体描述用什么图表/布局/对比结构]          │
-│                                                         │
-│ 📌 屏幕上的文字要点：                                     │
-│   • [要点1，≤12字，有数据或有观点]                        │
-│   • [要点2，≤12字]                                       │
-│   • [要点3，≤12字]（最多4个）                             │
-│                                                         │
-│ 🎤 讲者逐字稿（150-200字，口语化，类似小Lin说风格）：       │
-│   [完整的逐字稿，包含：开场过渡句 + 核心论证 + 比喻举例    │
-│    + 引向下一页的过渡句。让听众感受到"这个人真懂市场"]     │
-└─────────────────────────────────────────────────────────┘
-
-禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考"""
-
-
-# 通用备用（向后兼容）
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
 
 
 class ContentGenerator:
-    """内容生成器 —— 深度创作版"""
+    """内容生成器"""
 
     def __init__(self):
         self.provider = AI_PROVIDER
@@ -156,751 +103,583 @@ class ContentGenerator:
         self.client = self._init_client()
 
     def _init_client(self):
-        """根据提供商初始化异步客户端"""
         if self.provider == "anthropic":
             from anthropic import AsyncAnthropic
             return AsyncAnthropic(api_key=self.api_key)
 
-        # 默认使用 OpenAI 兼容接口（豆包/OpenAI）
         from openai import AsyncOpenAI
         return AsyncOpenAI(api_key=self.api_key, base_url=self.api_base or None)
 
     def _error_context(self) -> str:
-        """补充 provider/model/base，方便线上排障"""
         return (
             f"provider={self.provider}, "
             f"model={self.model}, "
             f"base_url={self.api_base or 'default'}"
         )
 
-    async def generate_stream_script(
+    def _system_prompt(self) -> str:
+        return (
+            "你是一位顶级中文财经内容总编。你的任务不是把新闻改写一遍，而是把当日信息流"
+            "重组为真正有洞察、有判断、有传播力的内容。你擅长从新闻中提炼主线、用商业"
+            "分析框架解释因果，并用通俗但不浅薄的中文讲清复杂问题。"
+        )
+
+    def _news_snapshot(self, news_items: List[Dict]) -> str:
+        lines = []
+        for index, news in enumerate(news_items, 1):
+            lines.append(
+                f"{index}. 标题：{news['title']}\n"
+                f"   分类：{news.get('category', '财经')} | 来源：{news['source']} | 时间：{news.get('time', '')}\n"
+                f"   链接：{news.get('url') or '无'}"
+            )
+        return "\n".join(lines)
+
+    def _style_profile(self, style: str) -> str:
+        style = (style or "专业").strip()
+        profiles = {
+            "专业": "强调事实、结构和专业判断，像成熟财经主播。",
+            "轻松": "语言更口语化，多用类比，但不能牺牲准确性。",
+            "解读型": "重点放在‘这意味着什么’，增加背景和因果拆解。",
+            "洞察": "突出主线、预期差、反直觉判断和结构化洞察。",
+        }
+        return profiles.get(style, profiles["专业"])
+
+    def _fallback_editorial_brief(self, news_items: List[Dict], goal: str) -> Dict[str, Any]:
+        categories = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
+        return {
+            "goal": goal,
+            "lead_angle": f"今日最值得抓住的主线是{categories[0] if categories else '财经'}方向的预期变化，而不是简单复述新闻。",
+            "core_conflicts": [
+                "政策预期与市场定价是否错位",
+                "短期情绪催化能否转化为中期基本面",
+                "投资者该关注主线还是防守风险",
+            ],
+            "market_pulse": [
+                "先判断事件影响的是估值、盈利还是风险偏好",
+                "区分主题交易与基本面改善，不混为一谈",
+                "判断后续该看哪些验证指标，而不是被单日情绪带偏",
+            ],
+            "audience_takeaways": [
+                "今天最重要的不是新闻数量，而是主线和节奏",
+                "真正值得追踪的是后续验证指标，而不是单日情绪",
+                "区分噪音和主线，别被标题热闹带偏",
+            ],
+            "slide_outline": [
+                {
+                    "headline": news["title"][:28],
+                    "bullets": [
+                        f"来源：{news['source']}",
+                        f"分类：{news.get('category', '财经')}",
+                        "关注其对市场预期的边际影响",
+                    ],
+                }
+                for news in news_items[:8]
+            ],
+        }
+
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("empty json text")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                raise
+            return json.loads(match.group(0))
+
+    async def _prepare_editorial_brief(self, news_items: List[Dict], goal: str, style: str) -> Dict[str, Any]:
+        prompt = f"""请你扮演财经内容总编，先不要直接写正文，而是基于以下新闻生成一份“编辑部策划 brief”。
+
+【生成目标】
+{goal}
+
+【写作气质】
+{self._style_profile(style)}
+
+【新闻池】
+{self._news_snapshot(news_items)}
+
+请输出严格 JSON，不要 Markdown，不要解释。结构如下：
+{{
+  "goal": "一句话写作目标",
+  "lead_angle": "最值得展开的总论点，必须有判断",
+  "core_conflicts": ["3条关键矛盾/预期差"],
+  "market_pulse": ["3条市场脉搏判断"],
+  "audience_takeaways": ["3条读者最该带走的结论"],
+  "slide_outline": [
+    {{
+      "headline": "适合做PPT页标题的一句话",
+      "bullets": ["3-4条高信息密度 bullet，每条不超过28字"]
+    }}
+  ]
+}}
+"""
+        try:
+            content = await self._call_ai(prompt, max_tokens=1800, system_prompt=self._system_prompt())
+            return self._extract_json(content)
+        except Exception as e:
+            logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
+            return self._fallback_editorial_brief(news_items, goal)
+
+    def _build_stream_script_prompt(
         self,
         news_items: List[Dict],
+        editorial_brief: Dict[str, Any],
         duration: int = 30,
-        style: str = "专业"
+        style: str = "专业",
     ) -> str:
-        """生成直播稿 —— 刘润×小Lin说融合风格（目标2000+字）"""
         news_details = "\n".join([
             f"{i+1}. 【{n.get('category', '财经')}】{n['title']}\n   来源：{n['source']}"
             for i, n in enumerate(news_items)
         ])
+        categories = list(dict.fromkeys(n.get("category", "财经") for n in news_items))
+        category_str = "、".join(categories[:4])
+        time_per_news = max(3, duration // max(len(news_items), 1))
+        core_conflicts = "\n".join(f"- {item}" for item in editorial_brief.get("core_conflicts", []))
+        market_pulse = "\n".join(f"- {item}" for item in editorial_brief.get("market_pulse", []))
+        takeaways = "\n".join(f"- {item}" for item in editorial_brief.get("audience_takeaways", []))
 
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-        weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][datetime.now().weekday()]
-
-        # 找出新闻之间的隐含联系，作为节目主线
-        categories = list(set(n.get('category', '财经') for n in news_items))
-        category_str = "、".join(categories[:3])
-
-        # 根据时长决定是否使用情绪弧线设计
         emotion_arc_section = ""
         if duration >= 60:
             emotion_arc_section = f"""
-═══════════════════════════════════════
 【情绪弧线设计（{duration}分钟版）】
-═══════════════════════════════════════
-
-本场直播时长{duration}分钟，必须设计情绪节奏，像交响乐而非单调进行曲：
-
-⏱ 0-5分钟【钩子阶段】情绪：好奇→期待
-  → 不寒暄，直接用最强冲突或最反直觉的观点切入
-  → 90秒内完成：建立信任 + 制造期待 + 给出承诺
-
-⏱ 5-15分钟【第一爽点】情绪：兴奋→满足
-  → 给出本场最好懂的"原来如此"
-  → 让后来进场的观众立刻感受到价值，决定留下
-
-⏱ 15-{duration//4}分钟【深度铺垫】情绪：沉淀→思考
-  → 数据、背景、逻辑框架
-  → 用互动（提问、投票）保持参与感
-
-⏱ {duration//4}-{duration//2}分钟【第二爽点】情绪：震惊→颠覆
-  → 最反直觉、最具冲击力的内容
-  → 权威打脸、历史真相揭秘类
-
-⏱ {duration//2}-{duration*3//4}分钟【情感共鸣】情绪：共情→连接
-  → 从宏观拉回个人，讲普通人的故事
-
-⏱ {duration*3//4}-{duration}分钟【高潮+余韵】情绪：兴奋→意犹未尽
-  → 最强金句、最犀利判断
-  → 结尾必须有开放式悬念，让观众带着问题离开
-
-在直播稿的每个段落开头，用【⏱ 第X分钟】标注时间节点。
+- 0-5分钟：用最强冲突或反直觉结论抓住观众
+- 5-15分钟：给出第一个高价值“原来如此”时刻
+- 15-{duration//2}分钟：铺设背景、逻辑和资金/产业链解释
+- {duration//2}-{duration}分钟：抛出核心判断、风险点和明日验证指标
 """
 
-        prompt = f"""【今日直播场景】
-今天是{date_str}{weekday}，你是拥有百万粉丝的顶级财经主播。
-你的粉丝关注你，因为你从不说废话，每次开播都能让他们学到别处学不到的东西。
+        return f"""【内容任务】
+请生成一份真正可上播的财经直播稿，而不是新闻摘要。
 
-【今日要解读的{len(news_items)}条新闻】
+【编辑部主线】
+{editorial_brief.get('lead_angle', '')}
+
+【你必须抓住的矛盾/预期差】
+{core_conflicts or '- 没有额外补充'}
+
+【你必须融入的市场脉搏判断】
+{market_pulse or '- 没有额外补充'}
+
+【观众最终要带走的结论】
+{takeaways or '- 没有额外补充'}
+
+【今日要闻】共{len(news_items)}条，涉及领域：{category_str}
 {news_details}
 
-【直播时长】约{duration}分钟
-【今日涉及领域】{category_str}
-
----
-
-请生成一份让粉丝"舍不得离开直播间"的完整直播稿。不是照本宣科，是真正的内容创作。
+【直播约束】
+- 总时长：约{duration}分钟
+- 每条新闻：约{time_per_news}分钟
+- 风格：{style}
+- 写作气质：{self._style_profile(style)}
 {emotion_arc_section}
-═══════════════════════════════════════
-【一、震撼开场】（150-200字）
-═══════════════════════════════════════
 
-开场钩子类型（从以下7种中选最适合今日新闻的一种）：
-  A. 反直觉陈述型："[被广泛接受的观点]是错的。真相是[颠覆性结论]。"
-  B. 数字震撼型："[具体数字] + [直观换算] + [情感含义]"
-  C. 悬疑故事型：先讲最戏剧化的结局，再说"但时间回到X年前……"
-  D. 问题直击型："你有没有想过/遇到过[具体痛点场景]？"
-  E. 权威挑战型："[专家/机构]说了[X]，但他们没告诉你的是[Y]"
-  F. 身份认同型："如果你是[特定身份]，这条内容可能值10万块"
-  G. 时效紧迫型："[最新事件]刚刚发生，大多数人还没意识到它的真实含义……"
+【结构要求】
+1. 开场不要寒暄，第一段必须先给“今晚最重要的一句话判断”。
+2. 每条新闻必须包含：发生了什么、为什么是现在、影响谁、接下来怎么判断。
+3. 至少加入 1 个反直觉观点、1 个历史类比、3 个生活化比喻。
+4. 互动提问必须有信息含量，不是无意义暖场。
+5. 结尾必须总结主线、风险点、明日关注指标。
+6. 可以加入[互动]、[留人钩子]、[揭晓悬念]、[情绪提示：...]等标记，但不要滥用。
 
-开场三要素（缺一不可）：
+【硬性指标】
+- 总字数不少于1800字
+- 至少出现5个具体数字
+- 禁止空话：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
 
-▶ 第1句（钩子句）：使用上述某种类型，绝对禁止用"大家好"、"欢迎收看"等废话开头。
-
-▶ 第2-3句（放大器）：扩展这个钩子，用具体数字或场景放大冲击感，让观众感到"这跟我的钱包有关"
-
-▶ 第4-6句（主线预告 + 悬念链第一环）：用一句话找到今天{len(news_items)}条新闻之间的隐藏逻辑联系，
-  然后植入第一个悬念钩子："接下来，我要告诉你一个大多数人还没有意识到的事情...
-  [稍后我会告诉你，为什么这件事和你的钱包直接相关]"
-
-═══════════════════════════════════════
-【二、核心内容解读】（每条新闻280-350字）
-═══════════════════════════════════════
-
-每条新闻按以下结构展开，且每条新闻结尾必须埋下新的悬念钩子，勾住下一段：
-
-🎯 【破题一句话】（一句话精华，说清楚这件事为什么重要，不超过30字）
-
-📖 【场景切入 —— 代入式开场】（2-3句）
-  从一个具体的人/公司/生活场景引出新闻，不直接说新闻内容。
-  用观众已知的生活经验作为切入点（比喻材料来自观众的日常世界）。
-  示例："假设你是一个做外贸的老板，今天早上刷手机，突然看到这条消息..."
-
-🔍 【三层剥皮】
-  第一层：发生了什么？（事实陈述，必须包含至少1个具体数字）
-  第二层：为什么会发生？（挖掘2个底层原因，至少1个是大多数人没想到的）
-  第三层：接下来会怎样？（给出明确的趋势判断，有时间节点，如"未来3个月内..."）
-
-💡 【反直觉洞察 + 生活化比喻】
-  "但你可能没想到的是..." 或 "大多数人的直觉是X，但我的判断是Y，原因是..."
-  必须配一个生活化比喻，让复杂概念秒懂（比喻材料来自观众日常生活）。
-
-❓ 【高价值互动 + 悬念链接】
-  互动提问必须是有答案的思考题（不是"大家觉得呢"）。
-  示例："你们知道上次出现同样信号是哪年吗？那次之后的3个月，相关板块涨了还是跌了？"
-  使用格式标记：[互动] 在公屏扣1，表示你也遇过这种情况
-  留人钩子格式：[留人钩子] 这个数字背后的秘密等一下揭晓，先往下看
-  （所有悬念必须在后文揭晓答案，[揭晓悬念] 之前说到XX，现在揭晓……）
-  结尾用桥接法引向下一条新闻："我们刚才说了X。但现在问题来了：[下一个问题]，这就是下面要讲的……"
-
-═══════════════════════════════════════
-【三、金句收尾 —— 余韵设计】（200-250字）
-═══════════════════════════════════════
-
-▶ 首尾呼应：回到开场的那个钩子，给出答案或更深一层的解读
-
-▶ 今日三条铁律（态度鲜明的判断，不是描述）：
-  ① [具体判断，有立场]
-  ② [具体判断，有立场]
-  ③ [具体判断，有立场]
-
-▶ 明天最重要的1件事（越具体越好）：
-  "明天，我建议你重点关注一件事：[具体事项+具体时间+你为什么这么判断]"
-
-▶ 余韵设计（选一种）：
-  - 开放式问题结尾：留一个高质量问题让观众带走思考
-  - 预言式结尾：给出可验证的预判，吸引观众持续关注
-  - 行动号召结尾：一个具体的、可立刻执行的动作
-
-▶ 今日金句（态度鲜明，≤20字，让粉丝截图转发）：
-  示例风格："记住今天我说的这句话：[某具体预判]。如果我判断错了，欢迎来怼我；如果判断对了，记得来告诉我一声。"
-
----
-
-【硬性指标——不达到不算完成】
-✅ 总字数不少于1800字
-✅ 全文出现至少5个具体数字（百分比/金额/时间/数量，真实合理）
-✅ 至少1个历史类比（"上次类似情况发生在X年，当时的结果是..."）
-✅ 至少1个反主流判断（与市场主流观点相反的独到见解）
-✅ 至少3个生活化比喻（比喻材料来自观众已知的日常世界）
-✅ 悬念链完整：每段结尾有新钩子，且最终都兑现答案
-✅ 结尾有余韵设计，不能硬结束
-✅ 语言口语化，有个人情感，像真人在和朋友讲话，不是在读新闻稿
-✅ 禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
-
-请直接输出完整直播稿内容，不要有任何前言说明：
+请直接输出完整直播稿，不要写解释：
 """
 
+    async def generate_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业") -> str:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
+            style=style,
+        )
+        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style)
         try:
             response = await self._call_ai(
                 prompt,
                 max_tokens=5000,
-                system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT
+                system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
             )
             return self._format_stream_script(response, news_items, duration)
         except Exception as e:
             logger.error("Generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_script(news_items)
 
-    async def generate_article(
-        self,
-        news_items: List[Dict],
-        title: str = ""
-    ) -> Dict:
-        """生成公众号文章 —— 让人看完想转发的深度好文（目标1800-2500字）"""
-        news_details = "\n".join([
-            f"• {n['title']}（来源：{n['source']}，分类：{n.get('category','财经')}）"
-            for n in news_items
-        ])
+    async def stream_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业") -> AsyncIterator[str]:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
+            style=style,
+        )
+        prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style)
+        try:
+            async for chunk in self._stream_ai(
+                prompt,
+                max_tokens=5000,
+                system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
+            ):
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            logger.error("Streaming generation error: %s | %s", e, self._error_context())
+            fallback = self._generate_fallback_script(news_items)
+            for chunk in self._chunk_text(fallback, chunk_size=160):
+                yield chunk
 
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-        weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][datetime.now().weekday()]
+    async def generate_article(self, news_items: List[Dict], title: str = "", focus_topic: str = "") -> Dict:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="写一篇能发在公众号上的高质量财经文章，不止要讲发生了什么，更要讲为什么重要",
+            style="洞察" if title else "解读型",
+        )
+        preferred_title = f"\n【标题方向偏好】\n{title}\n" if title else ""
+        focus_hint = f"\n【重点聚焦】\n{focus_topic}\n" if focus_topic else ""
+        prompt = f"""【内容任务】
+请写一篇让人读完就想转发的财经公众号长文。
+{preferred_title}{focus_hint}
+【总论点】
+{editorial_brief.get('lead_angle', '')}
 
-        prompt = f"""【写作任务】
-你要写一篇让人读完就想转发的公众号文章。
-衡量标准：读者读完后，对某件事的理解比读10篇普通新闻还深，且觉得"这个我得让朋友看看"。
+【必须回答的关键问题】
+{chr(10).join(f'- {item}' for item in editorial_brief.get('core_conflicts', []))}
 
-【今日素材】共{len(news_items)}条新闻
-{news_details}
+【普通读者最该带走的结论】
+{chr(10).join(f'- {item}' for item in editorial_brief.get('audience_takeaways', []))}
 
-【写作日期】{date_str} {weekday}
+【新闻池】
+{self._news_snapshot(news_items)}
 
----
+【写作要求】
+1. 必须提供3个标题备选：数字悬念型 / 反直觉型 / 读者利益型。
+2. 开篇不能从“今天市场”或“据报道”开始，要用具体场景、反常识事实或数字切入。
+3. 正文按“结论 -> 背景 -> 影响 -> 行动”来展开。
+4. 每一节都要写清：是什么、为什么、深层原因、明确判断。
+5. 结尾不能是“点赞关注”，而要给可执行动作或明确判断。
+6. 不能编造数据、机构观点或内幕。
+7. 可以有锋利判断，但必须能自圆其说。
 
-═══════════════════════════════════════
-【第一步：三个标题候选】
-═══════════════════════════════════════
+【篇幅】
+- 总字数不少于1800字
+- 至少6个具体数字
+- 至少1处历史类比
+- 至少1个反主流判断
 
-三个标题分别运用不同的心理钩子：
-
-标题A（数字+悬念型）：
-  公式：[具体数字] + [让人意外的结论]
-  示例风格："一个数字，看懂今天A股的真实信号" / "这3个信号同时出现，上次是2019年"
-  禁止模式：❌"重磅！降准！"❌"今日要闻汇总"
-
-标题B（反直觉型）：
-  公式：打破读者的预期认知
-  示例风格："所有人都在讨论降息，但真正的机会根本不在这里" / "你以为是利空，其实是反转信号"
-  要求：标题本身就是一个观点，读者同意或不同意都想点进来看
-
-标题C（读者利益型）：
-  公式：直接告诉读者"看完这篇，你能得到什么"
-  示例风格："今天这3件事，决定你接下来3个月怎么配置" / "如果你还持有X类资产，今天必须看这篇"
-
-═══════════════════════════════════════
-【第二步：正文内容】（不少于1800字）
-═══════════════════════════════════════
-
-**开篇（150-200字）——本文最重要的部分，决定读者是否继续读**
-
-绝对禁止从"今天市场..."或"据报道..."开始。
-
-要从一个具体的、有画面感的细节切入：
-- 可以是一个真实或假设的场景："2015年那个夏天，不少投资者..."
-- 可以是一个令人意外的数字："你可能不知道，在过去12个月里..."
-- 可以是一个反常识的事实："大多数人认为这是坏消息。但你仔细看完这篇，可能会改变想法。"
-
-开篇结尾用一句话，自然衔接到今天要讲的内容，形成流畅的过渡。
-
----
-
-**主体内容（每条新闻各自成节，每节300-400字）**
-
-每节结构（必须有以下四个要素）：
-
-① 小标题（能独立成一条微博的那种，有观点有信息量）
-  好标题示例："降息50基点：表面是礼包，本质是压力测试"
-  差标题示例："央行宣布降息50基点"（没有观点）
-
-② 是什么（1-2句，用具体数字说清楚事实）
-
-③ 为什么（挖掘2-3个深层原因，至少1个是读者没想到的角度）
-  用"但鲜为人知的是..."或"背后还有一个被忽视的原因..."引出深层逻辑
-
-④ 然后呢（最重要！明确告诉读者这件事对他们意味着什么）
-  给出明确判断：看涨/看跌/等待，或具体建议
-  禁止用：可能/或许/或将/不排除/仁者见仁
-  要用：我的判断是.../从历史数据来看.../这意味着...
-
----
-
-**结尾（150-200字）**
-
-不要写："希望对大家有所帮助，欢迎点赞关注。"
-不要写："以上仅供参考，投资有风险。"
-
-要写：
-1. 用一句话总结今天{len(news_items)}条新闻共同指向的那个更大的趋势或判断
-2. 给读者一个今天就能做的具体动作（不是"多加关注"，而是"今天可以查一查..."或"如果你的仓位里有...，可以考虑..."）
-3. 结尾金句：你对这个市场/这个趋势的核心判断（态度鲜明，让人记住）
-
----
-
-【输出格式——严格遵守】
-
+【输出格式】
 ===标题选项===
 标题A：[内容]
 标题B：[内容]
 标题C：[内容]
 
 ===正文===
-（从这里开始输出完整正文，使用Markdown格式，标题用##，加粗用**）
+（从这里开始输出完整正文，使用Markdown格式）
 
-（正文最后加一行）
 *本文内容仅供参考，不构成投资建议。投资有风险，决策需谨慎。*
 ===
-
-【硬性指标】
-✅ 正文总字数不少于1800字
-✅ 全文至少出现6个具体数字（真实合理，涉及金额/百分比/时间/数量）
-✅ 至少1处历史类比（"上次这种情况是X年X月，当时..."）
-✅ 至少1个反主流判断（与市场主流认知不同的独到看法，并给出理由）
-✅ 每节结尾必须有明确的倾向性判断，禁止模棱两可
-✅ 绝对禁止词：建议关注、可能有影响、需要观察、存在不确定性
 """
-
         try:
-            response = await self._call_ai(
-                prompt,
-                max_tokens=5000,
-                system_prompt=ARTICLE_SYSTEM_PROMPT
-            )
+            response = await self._call_ai(prompt, max_tokens=5000, system_prompt=ARTICLE_SYSTEM_PROMPT)
             return self._format_article(response)
         except Exception as e:
             logger.error("Article generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_article(news_items)
 
-    async def _analyze_news_outline(
-        self,
-        news_items: List[Dict],
-        focus_topic: str,
-        date_str: str
-    ) -> str:
-        """Step 1：内部分析框架（两步生成法的第一步）
-        生成核心洞察大纲，供第二步深度写作使用。
-        输出不直接展示给用户，而是作为第二步的上下文。
-        """
-        news_details = "\n".join([
-            f"• {n['title']}（{n['source']}）"
-            for n in news_items[:6]
-        ])
-        analysis_prompt = f"""请对以下财经新闻进行内部分析（不写文章，只做分析框架）：
+    async def _analyze_news_outline(self, news_items: List[Dict], focus_topic: str, date_str: str) -> str:
+        news_details = "\n".join([f"• {n['title']}（{n['source']}）" for n in news_items[:6]])
+        analysis_prompt = f"""请对以下财经新闻做内部分析（不写文章，只做分析框架）：
 
 核心事件：{focus_topic}
 相关新闻：
 {news_details}
 分析日期：{date_str}
 
-请按以下结构输出简洁的分析框架（不超过600字）：
-
-1. 反共识洞察：大多数人的判断是什么？真相/被低估的一面是什么？
-2. 利益流向图：谁是真正的受益者？谁是真正的受损者？有哪些"意外受益者"？
-3. 历史镜像：最相似的历史案例（具体到年月+事件名）+ 关键不同点
+请按以下结构输出简洁分析框架（不超过600字）：
+1. 反共识洞察：主流判断是什么？被低估的一面是什么？
+2. 利益流向图：谁受益，谁受损，有哪些意外受益者？
+3. 历史镜像：最相似的历史案例 + 关键不同点
 4. 二阶影响：列出3个大多数分析忽视的间接影响
-5. 核心金句：一句话总结本次事件的本质（≤20字，反直觉，可截图传播）
-6. 6个月预测：一个具体可量化可验证的预测（包含时间节点+量化目标）"""
-
+5. 核心金句：一句话总结本次事件的本质（≤20字）
+6. 6个月预测：一个具体可量化可验证的预测
+"""
         try:
-            outline = await self._call_ai(
+            return await self._call_ai(
                 analysis_prompt,
                 max_tokens=1200,
-                system_prompt=DEEP_DIVE_SYSTEM_PROMPT
+                system_prompt=DEEP_DIVE_SYSTEM_PROMPT,
             )
-            return outline
         except Exception as e:
             logger.warning("Outline analysis failed, proceeding without: %s", e)
             return ""
 
-    async def generate_deep_dive(
-        self,
-        news_items: List[Dict],
-        focus_topic: str = ""
-    ) -> str:
-        """生成深度长文 —— 两步生成法：先分析框架，再展开写作（目标3000+字）"""
+    async def generate_deep_dive(self, news_items: List[Dict], focus_topic: str = "") -> str:
         if not focus_topic:
             focus_topic = news_items[0]["title"]
 
-        news_details = "\n".join([
-            f"• {n['title']}（{n['source']}）"
-            for n in news_items[:6]
-        ])
-
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-
-        # 第一步：生成内部分析框架（Critic/Analyst pass）
-        internal_outline = await self._analyze_news_outline(
-            news_items, focus_topic, date_str
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="写一篇有研究框架、有投资视角、能帮助读者建立判断的深度长文",
+            style="洞察",
         )
-        outline_context = ""
-        if internal_outline:
-            outline_context = f"""
-【内部分析框架（已完成预分析，请在写作时充分利用以下洞察）】
-{internal_outline}
-
----
-"""
-
+        date_str = datetime.now().strftime("%Y年%m月%d日")
+        internal_outline = await self._analyze_news_outline(news_items, focus_topic, date_str)
+        outline_context = f"\n【预分析框架】\n{internal_outline}\n" if internal_outline else ""
         prompt = f"""【深度研究任务】
-你要写的不是"新闻汇总"，而是一篇能被人截图传播的原创深度分析。
-衡量标准：读者读完后，对这件事的理解比读完20篇普通新闻还深，且能用3句话向朋友解释清楚。
+你要写的不是新闻汇总，而是一篇能被人截图传播的原创深度分析。
+
+【总论点】
+{editorial_brief.get('lead_angle', '')}
 {outline_context}
 【核心事件】
 {focus_topic}
 
-【相关素材】
-{news_details}
+【新闻池】
+{self._news_snapshot(news_items[:10])}
 
-【写作日期】{date_str}
+【必须拆清楚的问题】
+{chr(10).join(f'- {item}' for item in editorial_brief.get('core_conflicts', []))}
 
----
+【写作结构】
+## 一、破题——打破认知
+## 二、溯源——这件事为什么走到今天
+## 三、深度拆解——从宏观/产业/资金/情绪看问题
+## 四、历史镜鉴——上次类似的事怎么演化
+## 五、蝴蝶效应——二阶和三阶影响
+## 六、情景推演——乐观/中性/悲观三种路径与概率
+## 七、先行指标——接下来该盯什么验证
+## 八、核心结论——6个月内的可验证预测
 
-═══════════════════════════════════════
-深度分析框架（按以下维度展开，总字数不少于3000字）
-═══════════════════════════════════════
-
-【一、破题——打破认知（200-300字）】
-
-先说结论，再说论证（这叫结论前置，是最高效的写法）。
-
-▶ 第一句话就是本文最核心的判断：[一句话，态度鲜明，不含任何模糊词汇]
-
-▶ 打破认知：绝大多数人看到这件事的第一反应是什么？他们的直觉为什么是错的（或者为什么只看到了一半）？
-
-▶ 本文要解决的核心问题：把这篇文章最值得读的理由，用2-3句话说清楚
-
-【二、溯源——这件事是怎么走到今天这一步的（400-500字）】
-
-▶ 追溯时间线：从6个月前（或更早）开始，梳理导致今天这件事发生的因果链
-  格式示例：
-  [时间节点1]：[发生了什么，为什么重要]
-  [时间节点2]：[发生了什么，为前一件事的结果或推进]
-  [时间节点3]：[今天的事件，在这条因果链中的位置]
-
-▶ 找到大多数报道没有提到的背景因素（至少1个）：为什么现在发生，不是早一年、晚一年？
-
-【三、深度拆解——三个维度全面分析（600-700字）】
-
-维度一：对不同参与者的差异化影响（普通散户 vs 机构 vs 外资 vs 产业链上下游）
-  - 谁是这件事最大的受益者？（具体说明，带理由）
-  - 谁是最大的受损者？（具体说明，带理由）
-  - 有没有"意外受益者"——表面上和这件事无关，但实际上会间接受益的行业/群体？
-
-维度二：时间维度的演化路径（短期/中期/长期分开分析）
-  - 短期（1-3个月）：市场最可能的反应是什么？为什么？
-  - 中期（3-12个月）：更深层的影响会在哪里显现？
-  - 长期（1-3年）：这件事在历史上会占什么位置？
-
-维度三：市场的定价是否充分？
-  - 目前市场的主流解读是什么？
-  - 哪里被高估（市场过于乐观）？哪里被低估（市场还没反映到）？
-  - 如果市场错了，最可能错在哪里？
-
-【四、历史镜鉴——上次类似的事是怎么演化的（400-500字）】
-
-章节转换桥接句（必须有）：用上一章节的问题作为本章起点，例如：
-"我们刚才说了[上章核心结论]。但现在问题来了：历史上出现过类似情况吗？当时是怎么演化的……"
-
-▶ 找到最近的一次高度类似事件（必须具体到年月，具体到事件名称）
-  "最近一次类似的情况发生在[X年X月]，当时的背景是..."
-
-▶ 相同之处（让人觉得历史在重演的地方）
-
-▶ 不同之处（为什么今天的情况不能完全复制历史经验）
-  使用高级对比结构："历史告诉我们应该这样，但这次不同，因为……"（制造认知张力）
-
-▶ 从历史案例中，能得出什么可操作的结论？（至少1条）
-
-【五、蝴蝶效应——这件事的二阶、三阶影响（400-500字）】
-
-章节转换：先用模式中断法重新激活注意力——在完成历史分析后，换一种节奏：
-"好，历史讲完了。现在我们把视角拉回来，看看这件事会怎么'扩散'……"
-
-一阶影响：大家都知道，不详细展开
-二阶影响（这才是重点）：因为A发生了→所以B会发生→因此C也会间接受影响
-  - 点出2-3个市场目前还没有充分反映的间接影响
-  - "意外受益者"清单：表面上无关，实际上会从中获益的行业/公司类型
-  - "意外受损者"清单：表面上无关，实际上会被间接拖累的行业/公司类型
-
-在本章结尾植入悬念钩子："上面这些是背景，接下来才是今天最重要的部分——我要告诉你三种可能的未来……"
-
-【六、情景推演——三种可能的未来（400-500字）】
-
-不能只给一个预测，要给出三种情景：
-
-🟢 乐观情景（概率估计：X%）
-  触发条件：[具体说明，什么事情发生了，才会走向这个情景]
-  演化路径：[如果是这个情景，会怎么发展]
-  对应策略：[投资者应该怎么做]
-
-🟡 中性情景（概率估计：X%）
-  触发条件：[具体说明]
-  演化路径：[具体说明]
-  对应策略：[具体说明]
-
-🔴 悲观情景（概率估计：X%）
-  触发条件：[具体说明]
-  演化路径：[具体说明]
-  对应策略：[具体说明]
-
-（三种情景的概率加起来等于100%，且必须给出具体数字，不能说"较高/较低"）
-
-【七、先行指标——告诉读者盯住什么（300-400字）】
-
-给读者3个"金丝雀指标"——如果这些信号出现，就说明某种趋势开始验证：
-
-📍 指标一：[具体看什么数据/事件] + [出现什么变化代表什么含义] + [大概在什么时间节点能观察到]
-📍 指标二：[同上]
-📍 指标三：[同上]
-
-这部分是整篇文章最有实用价值的地方，要具体到让读者明天就能去查。
-
-【八、核心结论——这篇文章的记忆点（200-300字）】
-
-▶ 一句话结论：如果只能记住这篇文章的一件事，那就是——[态度鲜明，有时间节点的核心判断]
-
-▶ 你的立场：看多/看空/中性？理由是什么？（必须明确表态）
-
-▶ 6个月后的具体预测：[具体事件] 在 [具体时间] 之前，[具体的可量化结果]
-  这个预测是可以被验证的，6个月后你可以回来对照。
-
-▶ 余韵结尾（从以下4种中选最适合的一种）：
-  - 开放式问题结尾：留一个高质量问题让读者带走思考
-    "今天分析完所有数据，最后我想留给你一个问题：如果你是决策者，你会怎么选？"
-  - 预言式结尾：给出可验证的判断，吸引读者持续关注
-  - 行动号召结尾：把知识转化为一个具体的、可立刻执行的动作
-  - 哲学升华结尾：把财经话题升华到人生层面
-    "经济周期会来，也会走。真正让人穿越周期的，从来不是资产配置，而是……"
-
-▶ 截图友好型金句（≤20字，反直觉+可验证+有画面感）：
-  好金句标准：简短 + 反直觉 + 可验证 + 有画面感
-  示例风格："你以为在存钱，其实在慢慢捐钱。"
-
----
-
-【硬性指标——不达标不算完成】
-✅ 总字数不少于3000字
-✅ 至少出现10个具体数字（真实合理的历史数据、预测数字、对比数字）
-✅ 至少1个完整的历史案例（具体到年份、事件名称、当时的结果）
-✅ 三种情景推演必须都有具体概率数字
-✅ 先行指标必须具体到可操作（不是"关注政策面"，而是"如果看到X数据超过Y，就说明..."）
-✅ 结尾必须有明确的6个月预测，可被验证
-✅ 全文必须有至少1个反主流判断（与市场主流认知不同，并给出理由）
-✅ 每章节之间必须有桥接句，不能硬切换（用上一章的问题引出下一章）
-✅ 结尾必须有余韵设计，不能硬结束
-✅ 至少1句截图友好型金句（≤20字，反直觉+有画面感）
-✅ 绝对禁止：建议关注、可能有影响、需要观察、存在不确定性、仅供参考、或将、不排除
+【强制要求】
+- 总字数不少于3000字
+- 至少10个具体数字
+- 三种情景必须给出具体概率，且和为100%
+- 至少1个反主流判断
+- 每章节之间要有桥接句，不要硬切换
+- 结尾必须给出6个月内可验证预测
+- 禁止空话：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
 
 请直接输出完整深度长文，使用Markdown格式：
 """
-
         try:
-            return await self._call_ai(
-                prompt,
-                max_tokens=7000,
-                system_prompt=DEEP_DIVE_SYSTEM_PROMPT
-            )
+            return await self._call_ai(prompt, max_tokens=7000, system_prompt=DEEP_DIVE_SYSTEM_PROMPT)
         except Exception as e:
             logger.error("Deep dive generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_deep_dive(news_items)
 
-    async def generate_ppt(
-        self,
-        news_items: List[Dict],
-        focus_topic: str = ""
-    ) -> str:
-        """生成PPT脚本 —— 能"震住场子"的财经演讲幻灯片脚本"""
+    async def generate_ppt_script(self, news_items: List[Dict], focus_topic: str = "") -> str:
         if not focus_topic:
             focus_topic = news_items[0]["title"]
-
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份适合晨会、直播前准备或路演汇报的财经 PPT 脚本",
+            style="洞察",
+        )
         news_details = "\n".join([
             f"{i+1}. 【{n.get('category','财经')}】{n['title']}（{n['source']}）"
             for i, n in enumerate(news_items[:6])
         ])
-
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-        n_news = min(len(news_items), 5)
-        slide_news_end = 4 + n_news
-        slide_connect = slide_news_end + 1
-        slide_scenario = slide_connect + 1
-        slide_action = slide_scenario + 1
-        slide_end = slide_action + 1
-
         prompt = f"""【PPT创作任务】
-你要生成一套"震住场子"的财经演讲PPT完整脚本。
-使用场景：投资者路演、内部汇报、财经自媒体视频讲解。
-衡量标准：听众在PPT结束时，觉得"这人真懂市场，我要把他的观点分享出去"。
+你要生成一套可直接用于财经讲解、路演、直播准备的完整 PPT 脚本。
 
 【核心主题】
 {focus_topic}
 
-【素材新闻】（共{len(news_items)}条）
+【总论点】
+{editorial_brief.get('lead_angle', '')}
+
+【必须传递给观众的结论】
+{chr(10).join(f'- {item}' for item in editorial_brief.get('audience_takeaways', []))}
+
+【素材新闻】
 {news_details}
 
-【演讲日期】{date_str}
+【输出要求】
+请按页输出，每页都必须包含以下字段：
+- 【第X张 · 页面类型】
+- 标题：
+- 💡 核心论点：
+- 📌 屏幕要点：3-4条
+- 🎤 讲者逐字稿：120-220字
+- 📊 可视化建议：
 
----
-
-每张PPT按以下固定格式输出：
-
-┌─────────────────────────────────────────┐
-│ 【第X张 · 页面类型】                     │
-│ 标题：[幻灯片标题]                       │
-├─────────────────────────────────────────┤
-│ 🎯 核心信息（≤20字，有观点的判断句）     │
-│                                         │
-│ 📌 要点：                               │
-│   • [要点1，≤15字]                      │
-│   • [要点2，≤15字]                      │
-│   • [要点3，≤15字]                      │
-│                                         │
-│ 🎤 演讲者口播（100-150字，口语化）       │
-│                                         │
-│ 📊 视觉设计建议（具体说明用什么图/数据）  │
-└─────────────────────────────────────────┘
-
----
-
-请按以下顺序生成完整PPT脚本（共{slide_end}张），严格使用System Prompt中规定的格式：
-
-【第1张 · 封面】
-主标题：不超过20字，有冲击力，像一个让人停下来的悬念，不是名词堆砌
-副标题：一句话说清楚"今天要回答一个什么问题"
-💡 核心论点：[整场演讲的核心判断，一句话，态度鲜明]
-📊 可视化建议：深色背景+超大字体主标题数字，营造庄重感
-📌 屏幕要点：[封面只有主副标题，不列要点]
-🎤 讲者逐字稿（开场30秒钩子，150字）：
-  绝对不从"大家好"开始，直接用一个让人意外的数字/场景开场，
-  30秒内完成：建立信任+制造期待+给出承诺，以"接下来我要告诉你……"结束
-
-【第2张 · 结论前置——今天最重要的3个判断】
-💡 核心论点：先看答案，再看论证——时间是最贵的资源
-📊 可视化建议：1/2/3三个序号大字突出，每条旁边配一个方向性图标（↑↓→）
-📌 屏幕要点：[结论1：有观点的判断句] / [结论2] / [结论3]（不是描述！）
-🎤 讲者逐字稿（150字）：
-  "我知道很多人喜欢让你慢慢猜，但我觉得时间是最贵的……所以今天先把最重要的三句话告诉你……"
-  逐一解释三个结论的核心逻辑，并预告后面会详细论证
-
-【第3张 · 为什么今天这件事比你想的更重要？】
-💡 核心论点：[用一个反直觉的数字说明这件事的真实规模/影响]
-📊 可视化建议：超大数字居中配对比色，左侧"你以为"vs右侧"实际上"
-📌 屏幕要点：• [数字1+换算] • [数字2+换算] • [时间紧迫性]
-🎤 讲者逐字稿（150字）：
-  制造紧迫感——"如果今天这件事你没搞清楚，接下来几个月你可能会后悔……"
-  用数据换算让听众感受到规模（不说千亿，说"够全国人……"）
-
-【第4张 · 打破认知：大多数人的判断在哪里出了偏差？】
-💡 核心论点：[大多数人认为X，但真相是Y——这张是全场"哇时刻"]
-📊 可视化建议：左右对比布局，左边"主流认知"红色×，右边"真实情况"绿色✓
-📌 屏幕要点：• [误解1 → 真相1] • [误解2 → 真相2] • [被忽视的关键变量]
-🎤 讲者逐字稿（200字）：
-  "好，现在我要挑战一下大家的常识……大多数人看到这件事的第一反应是……但今天我要告诉你，
-  这个判断在哪里出了问题……真正被市场低估的是……"
-
-{self._generate_ppt_news_slides(news_items[:n_news], start=5)}
-
-【第{slide_connect}张 · 连接洞察——这{len(news_items)}件事背后的共同逻辑是什么？】
-💡 核心论点：[把所有新闻串联起来的那个"哇"结论，一句话，让听众震惊]
-📊 可视化建议：思维导图或辐射状连接线，各事件连向中心的核心判断
-📌 屏幕要点：• [连接点1] • [连接点2] • [共同指向的趋势]
-🎤 讲者逐字稿（200字）：
-  "你们有没有发现，今天讲的这{len(news_items)}件事，表面上看毫不相关——
-  一个是……一个是……一个是……但如果把它们放在一起看，你会发现它们都在指向同一件事……
-  这是今天整场演讲最重要的判断，也是我花了最多时间研究的部分……"
-
-【第{slide_scenario}张 · 情景推演——接下来有三种可能】
-💡 核心论点：[我最看好哪种情景，以及为什么]
-📊 可视化建议：三列布局绿/黄/红，每列标注概率%，触发条件用小箭头
-📌 屏幕要点：• 🟢乐观[X%]触发条件 • 🟡中性[Y%]触发条件 • 🔴悲观[Z%]触发条件
-🎤 讲者逐字稿（200字）：
-  "我不喜欢只给一个预测，因为预测本身有不确定性——所以我给三个情景和概率……
-  [解释各情景] 如果你问我最看好哪种，我会说……因为……
-  如果出现[某信号]，那要立刻重新判断……"
-
-【第{slide_action}张 · 行动指南——你现在应该做什么？】
-💡 核心论点：分析是手段，行动才是目的——针对三类投资者的具体建议
-📊 可视化建议：三行对应三类投资者，每行一条具体建议+可执行时间节点
-📌 屏幕要点：• 保守型：[具体操作] • 稳健型：[具体操作] • 积极型：[具体操作]
-🎤 讲者逐字稿（200字）：
-  "好，讲了这么多分析，最后说点对大家真正有用的……
-  如果你是保守型投资者，今天可以做的一件事是……
-  如果你是稳健型……如果你是积极型……
-  但记住，在看到[具体先行指标]出现之前，不要轻易改变方向……"
-
-【第{slide_end}张 · 记忆点——如果只记住一件事】
-💡 核心论点：[今天最核心的金句，≤15字，反直觉，可截图传播]
-📊 可视化建议：金句超大字体居中，下方配3个先行指标，深色极简背景
-📌 屏幕要点：• 金句：[≤15字] • 先行指标1 • 先行指标2 • 先行指标3
-🎤 讲者逐字稿（150字）：
-  制造"终局感"——"今天的内容很多，但如果你只能记住一件事，那就是这句话：[金句]……
-  6个月后，[具体可量化预测]……如果我判断对了，欢迎回来告诉我；如果错了，也欢迎来怼我……"
-
----
+【页面建议结构】
+1. 封面
+2. 结论前置：今天最重要的3个判断
+3. 为什么这件事比你想的更重要
+4. 打破认知：主流判断哪里错了
+5-N. 逐条新闻深析
+N+1. 把几条新闻串起来的共同逻辑
+N+2. 情景推演
+N+3. 行动指南
+N+4. 记忆点与先行指标
 
 【硬性要求】
-✅ 每张PPT的"核心信息"必须是有观点的判断句，不是描述句
-✅ 演讲者口播必须口语化，像真人在说话，不是官方发言稿
-✅ 至少4张PPT有具体的数字数据
-✅ 至少1张PPT有反直觉判断（挑战主流认知）
-✅ 视觉建议必须具体（"2015年vs2024年折线对比图"，不是"建议用图表"）
-✅ 行动建议必须可执行（"查一下你持仓中X类资产的比例"，不是"保持关注"）
-✅ 禁止词汇：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
+- 每页核心论点必须是观点句，不是描述句
+- 屏幕要点保持极简，每条不超过18字
+- 口播要像真人在讲，不是官方发言稿
+- 至少4页出现具体数字
+- 至少1页是反直觉判断
+- 禁止空话：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
 
 请直接输出完整PPT脚本：
 """
-
         try:
-            return await self._call_ai(
-                prompt,
-                max_tokens=6000,
-                system_prompt=PPT_SYSTEM_PROMPT
-            )
+            return await self._call_ai(prompt, max_tokens=6500, system_prompt=PPT_SYSTEM_PROMPT)
         except Exception as e:
-            logger.error("PPT generation error: %s | %s", e, self._error_context())
-            return self._generate_fallback_ppt(news_items, focus_topic)
+            logger.error("PPT script generation error: %s | %s", e, self._error_context())
+            return self._generate_fallback_ppt_script(news_items, focus_topic)
 
-    def _generate_ppt_news_slides(self, news_items: List[Dict], start: int = 5) -> str:
-        """生成新闻解析幻灯片的提示词片段（麦肯锡格式，含讲者逐字稿）"""
-        slides = []
-        for i, news in enumerate(news_items):
-            slide_num = start + i
-            slides.append(f"""【第{slide_num}张 · 深析{i+1}：{news['title'][:22]}...】
+    async def generate_ppt(self, news_items: List[Dict], title: str = "", style: str = "专业", focus_topic: str = "") -> bytes:
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        from pptx.util import Inches, Pt
 
-严格按以下格式输出本张幻灯片：
+        ppt_script = await self.generate_ppt_script(news_items, focus_topic=focus_topic or title)
+        slides = self._parse_ppt_script(ppt_script)
+        if not slides:
+            slides = self._fallback_slide_data(news_items, title or focus_topic)
 
-┌─────────────────────────────────────────────────────────┐
-│ 【第{slide_num}张 · 新闻深析{i+1}】标题（有观点的判断句，≤20字）│
-├─────────────────────────────────────────────────────────┤
-│ 💡 核心论点：[一句话，说清楚这条新闻为什么比表面更重要]    │
-│                                                         │
-│ 📊 可视化建议：[具体描述：时间轴/对比图/数据大字/热力图]   │
-│                                                         │
-│ 📌 屏幕要点：                                            │
-│   • [是什么：事实+具体数字，≤12字]                       │
-│   • [为什么：最深层的原因，≤12字]                        │
-│   • [然后呢：明确的看多/看空/等待判断，≤12字]             │
-│                                                         │
-│ 🎤 讲者逐字稿（150-200字，口语化）：                      │
-│   开场：用一个类比或日常场景让听众代入                    │
-│   核心：给出反直觉的深层分析（不要说表面原因）             │
-│   结尾：一句态度鲜明的判断 + 引向下一页的过渡句            │
-└─────────────────────────────────────────────────────────┘""")
-        return "\n\n".join(slides)
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+        layout = prs.slide_layouts[6]
 
-    async def _call_ai(
-        self,
-        prompt: str,
-        max_tokens: int = 4000,
-        system_prompt: Optional[str] = None
-    ) -> str:
-        """调用AI接口（异步）
+        blue = RGBColor(0x1A, 0x56, 0xDB)
+        dark = RGBColor(0x1F, 0x2A, 0x3C)
+        white = RGBColor(0xFF, 0xFF, 0xFF)
+        gray = RGBColor(0x6B, 0x72, 0x80)
 
-        Args:
-            prompt: 用户消息/任务描述
-            max_tokens: 最大输出token数
-            system_prompt: 专属角色System Prompt，None时使用MASTER_SYSTEM_PROMPT
-        """
+        def add_bg(slide, color):
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = color
+
+        def add_textbox(slide, text, left, top, width, height, font_size=18, bold=False, color=None, align=PP_ALIGN.LEFT):
+            tx_box = slide.shapes.add_textbox(left, top, width, height)
+            tf = tx_box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.alignment = align
+            run = p.add_run()
+            run.text = text
+            run.font.size = Pt(font_size)
+            run.font.bold = bold
+            if color:
+                run.font.color.rgb = color
+            return tx_box
+
+        cover_title = title or focus_topic or f"财经简报 · {datetime.now().strftime('%Y年%m月%d日')}"
+        cover = prs.slides.add_slide(layout)
+        add_bg(cover, dark)
+        add_textbox(cover, cover_title, Inches(0.9), Inches(1.7), Inches(11.4), Inches(1.5), font_size=32, bold=True, color=white, align=PP_ALIGN.CENTER)
+        add_textbox(cover, slides[0].get('core', '今天最重要的判断，先讲结论再讲论证'), Inches(1.1), Inches(3.4), Inches(11.1), Inches(1), font_size=18, color=RGBColor(0xC7, 0xD2, 0xFE), align=PP_ALIGN.CENTER)
+
+        for slide_data in slides:
+            slide = prs.slides.add_slide(layout)
+            add_bg(slide, white)
+            add_textbox(slide, slide_data['title'], Inches(0.7), Inches(0.5), Inches(11.8), Inches(0.8), font_size=24, bold=True, color=dark)
+            add_textbox(slide, f"💡 核心论点：{slide_data['core']}", Inches(0.8), Inches(1.4), Inches(11.4), Inches(0.8), font_size=15, bold=True, color=blue)
+            add_textbox(slide, "📌 屏幕要点", Inches(0.8), Inches(2.2), Inches(3), Inches(0.4), font_size=13, bold=True, color=blue)
+            top = 2.7
+            for bullet in slide_data['bullets'][:4]:
+                add_textbox(slide, f"• {bullet}", Inches(1.0), Inches(top), Inches(5.4), Inches(0.45), font_size=14, color=dark)
+                top += 0.45
+            add_textbox(slide, "🎤 讲者备注", Inches(6.4), Inches(2.2), Inches(3), Inches(0.4), font_size=13, bold=True, color=blue)
+            add_textbox(slide, slide_data['speaker_notes'], Inches(6.5), Inches(2.7), Inches(5.7), Inches(2.7), font_size=13, color=dark)
+            add_textbox(slide, f"📊 可视化建议：{slide_data['visual']}", Inches(0.8), Inches(5.9), Inches(11.2), Inches(0.6), font_size=12, color=gray)
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    def _parse_ppt_script(self, script: str) -> List[Dict[str, Any]]:
+        sections = re.split(r"(?=【第\d+张)", script or "")
+        slides: List[Dict[str, Any]] = []
+        for section in sections:
+            section = section.strip()
+            if not section.startswith("【第"):
+                continue
+            title = ""
+            core = ""
+            bullets: List[str] = []
+            speaker_notes = ""
+            visual = ""
+
+            title_match = re.search(r"标题[:：]\s*(.+)", section)
+            if title_match:
+                title = title_match.group(1).strip()
+            else:
+                header_match = re.search(r"【第\d+张[^】]*】\s*(.+)", section)
+                title = header_match.group(1).strip() if header_match else "未命名页"
+
+            core_match = re.search(r"[💡🎯]\s*(?:核心论点|核心信息)[:：]\s*(.+)", section)
+            if core_match:
+                core = core_match.group(1).strip()
+
+            bullet_match = re.search(r"📌\s*(?:屏幕上的文字要点|屏幕要点|要点)[:：](.*?)(?:🎤|📊|$)", section, re.DOTALL)
+            if bullet_match:
+                for line in bullet_match.group(1).splitlines():
+                    line = re.sub(r"^[\s•·\-]+", "", line).strip()
+                    if line:
+                        bullets.append(line)
+
+            speaker_match = re.search(r"🎤\s*(?:讲者逐字稿|演讲者口播)[^\n]*\n(.*?)(?:📊|$)", section, re.DOTALL)
+            if speaker_match:
+                speaker_notes = "\n".join(line.strip() for line in speaker_match.group(1).splitlines() if line.strip())
+
+            visual_match = re.search(r"📊\s*(?:可视化建议|视觉设计建议)[:：]\s*(.+)", section)
+            if visual_match:
+                visual = visual_match.group(1).strip()
+
+            if title or core or bullets or speaker_notes:
+                slides.append({
+                    "title": title or "未命名页",
+                    "core": core or "这一页的核心是帮助观众抓住真正的主线",
+                    "bullets": bullets or ["补充关键事实", "解释深层逻辑", "提示后续验证指标"],
+                    "speaker_notes": speaker_notes or "这一页要讲清楚：为什么这件事重要、为什么是现在、接下来要看什么。",
+                    "visual": visual or "建议使用对比结构、关键数字放大或时间线布局。",
+                })
+        return slides
+
+    def _fallback_slide_data(self, news_items: List[Dict], focus_topic: str = "") -> List[Dict[str, Any]]:
+        topic = focus_topic or news_items[0]["title"]
+        slides = [{
+            "title": "今天最重要的3个判断",
+            "core": "先讲结论，再讲论证，帮助观众快速抓住主线。",
+            "bullets": [
+                "市场真正定价的是主线变化",
+                "短期情绪不等于中期趋势",
+                "接下来要看验证指标",
+            ],
+            "speaker_notes": "先把答案告诉观众，再逐步解释为什么，避免观众在前3分钟流失。",
+            "visual": "建议使用三栏对比布局，突出结论1/2/3。",
+        }]
+        for news in news_items[:6]:
+            slides.append({
+                "title": news["title"][:26],
+                "core": f"这条新闻真正重要的地方，在于它会改变{news.get('category', '财经')}方向的预期。",
+                "bullets": [
+                    f"来源：{news['source']}",
+                    f"分类：{news.get('category', '财经')}",
+                    "看清市场真正关心什么",
+                ],
+                "speaker_notes": f"这条新闻表面上是{news.get('category', '财经')}事件，真正要讲的是它如何影响预期、情绪和后续验证指标。",
+                "visual": "建议采用标题+三条 bullet + 底部备注的简洁结构。",
+            })
+        slides.append({
+            "title": topic[:26],
+            "core": "如果只能记住一件事，那就是主线比碎片更重要。",
+            "bullets": ["看主线", "看验证", "看风险收益比"],
+            "speaker_notes": "收尾时把整场逻辑合成一句能被记住的话，并提醒观众明天开始该看什么。",
+            "visual": "建议极简收尾页，核心句居中，验证指标置于下方。",
+        })
+        return slides
+
+    async def _call_ai(self, prompt: str, max_tokens: int = 4000, system_prompt: Optional[str] = None) -> str:
         if not self.api_key:
             raise RuntimeError(f"缺少 {self.provider} 的 API Key")
 
@@ -910,31 +689,60 @@ class ContentGenerator:
             message = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                temperature=0.85,
+                temperature=0.75,
                 system=sys_prompt,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
             )
             return message.content[0].text
-        else:
-            # OpenAI兼容接口（豆包/OpenAI等）
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=0.85
-            )
-            content = response.choices[0].message.content
-            return content if content else ""
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.75,
+        )
+        content = response.choices[0].message.content
+        return content if content else ""
+
+    async def _stream_ai(self, prompt: str, max_tokens: int = 2000, system_prompt: Optional[str] = None) -> AsyncIterator[str]:
+        if not self.api_key:
+            raise RuntimeError(f"缺少 {self.provider} 的 API Key")
+
+        sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
+
+        if self.provider == "anthropic":
+            full_text = await self._call_ai(prompt, max_tokens=max_tokens, system_prompt=sys_prompt)
+            for chunk in self._chunk_text(full_text):
+                yield chunk
+            return
+
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.75,
+            stream=True,
+        )
+        async for part in stream:
+            delta = ""
+            if part.choices:
+                delta = part.choices[0].delta.content or ""
+            if delta:
+                yield delta
+
+    def _chunk_text(self, text: str, chunk_size: int = 120) -> List[str]:
+        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
     def _format_stream_script(self, content: str, news_items: List[Dict], duration: int = 30) -> str:
-        """格式化直播稿"""
         date_str = datetime.now().strftime("%Y年%m月%d日")
         weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][datetime.now().weekday()]
-
-        formatted = f"""
+        return f"""
 ╔══════════════════════════════════════════════════════════╗
 ║  📺 财经深度直播稿                                        ║
 ║  📅 {date_str} {weekday}                                  ║
@@ -944,27 +752,23 @@ class ContentGenerator:
 {content}
 
 {'─'*60}
-📌 本稿由 AI 深度创作，融合刘润×小Lin说风格
+📌 本稿由 AI 深度创作生成，请结合实时盘面和最新数据调整
 📊 预计直播时长：{len(news_items) * 4}-{len(news_items) * 6} 分钟
 {'─'*60}
 """
-        return formatted
 
     def _format_article(self, content: str) -> Dict:
-        """格式化公众号文章"""
         titles = []
         if "===标题选项===" in content:
             parts = content.split("===正文===")
             title_section = parts[0].replace("===标题选项===", "").strip()
             raw_titles = [t.strip() for t in title_section.split("\n") if t.strip()]
-            # 清理标题前缀（标题A：/ 标题B：等）
             for t in raw_titles:
-                cleaned = re.sub(r'^标题[A-Ca-c：:]\s*', '', t).strip()
+                cleaned = re.sub(r"^标题[A-Ca-c：:]\s*", "", t).strip()
                 if cleaned:
                     titles.append(cleaned)
             titles = titles[:3]
             content_body = parts[1] if len(parts) > 1 else content
-            # 去掉最后的===
             content_body = content_body.split("===")[0].strip()
         else:
             title_match = re.search(r'【标题选项】\n(.+?)\n\n', content, re.DOTALL)
@@ -978,33 +782,22 @@ class ContentGenerator:
         return {
             "titles": titles,
             "content": content_body.strip(),
-            "html": self._markdown_to_html(content_body)
+            "html": self._markdown_to_html(content_body),
         }
 
     def _markdown_to_html(self, md: str) -> str:
-        """Markdown转HTML（用于公众号）"""
         html = md
-
-        # 清理格式标记
         html = html.replace("===标题选项===", "").replace("===正文===", "").replace("===", "")
-        html = re.sub(r'标题[A-Ca-c：:].+?\n', '', html)
+        html = re.sub(r"标题[A-Ca-c：:].+?\n", "", html)
         html = re.sub(r'【标题选项】.+?\n\n', '', html, flags=re.DOTALL)
-
-        # 标题转换
         html = re.sub(r'^# (.+)$', r'<h1 style="font-size:22px;font-weight:bold;margin:20px 0;color:#1a1a1a;">\1</h1>', html, flags=re.MULTILINE)
         html = re.sub(r'^## (.+)$', r'<h2 style="font-size:18px;font-weight:bold;margin:16px 0 8px;color:#1a1a1a;border-left:4px solid #0066cc;padding-left:10px;">\1</h2>', html, flags=re.MULTILINE)
         html = re.sub(r'^### (.+)$', r'<h3 style="font-size:16px;font-weight:bold;margin:12px 0 6px;color:#333;">\1</h3>', html, flags=re.MULTILINE)
-
-        # 加粗
         html = re.sub(r'\*\*(.+?)\*\*', r'<strong style="color:#0066cc;">\1</strong>', html)
         html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
-
-        # 列表
         html = re.sub(r'^[•·▶📍📌✅❌🎯💡❓🟢🟡🔴] (.+)$', r'<li style="margin:6px 0;">\1</li>', html, flags=re.MULTILINE)
         html = re.sub(r'^- (.+)$', r'<li style="margin:6px 0;">\1</li>', html, flags=re.MULTILINE)
-        html = re.sub(r'(<li.+<\/li>\n?)+', lambda m: f'<ul style="margin:10px 0;padding-left:20px;list-style:disc;">{m.group(0)}</ul>', html)
-
-        # 段落
+        html = re.sub(r'(<li.+</li>\n?)+', lambda m: f'<ul style="margin:10px 0;padding-left:20px;list-style:disc;">{m.group(0)}</ul>', html)
         paragraphs = html.split("\n\n")
         formatted = []
         for p in paragraphs:
@@ -1012,15 +805,13 @@ class ContentGenerator:
             if p and not p.startswith("<h") and not p.startswith("<ul") and not p.startswith("<li"):
                 p = f'<p style="line-height:1.9;margin:15px 0;color:#333;font-size:15px;">{p}</p>'
             formatted.append(p)
-
         return "\n".join(formatted)
 
     def _generate_fallback_script(self, news_items: List[Dict]) -> str:
-        """AI调用失败时的备用脚本"""
         date_str = datetime.now().strftime("%Y年%m月%d日")
         script = f"""
-【开场白】
-各位投资者朋友，今天是{date_str}，让我告诉你今天市场上一个很多人没注意到的信号——
+【开场判断】
+今天最重要的，不是某一条新闻本身，而是市场正在重新定价的方向。今天是{date_str}，下面我们把真正值得看的主线拆开来说。
 
 """
         for i, news in enumerate(news_items, 1):
@@ -1028,127 +819,81 @@ class ContentGenerator:
 【新闻{i}】{news['title']}
 
 【深度解读】
-来自{news['source']}的这条消息，表面上是{news.get('category', '财经')}方向的新闻，但背后的逻辑值得我们多想一层。
+这条消息来自{news['source']}，属于{news.get('category', '财经')}。表面上它是一条单点新闻，但更值得关注的是它会如何影响预期、情绪和后续验证指标。
 
-【互动提问】
-这件事发展下去，你们觉得最先受影响的会是哪个板块？评论区说说你的判断。
+[互动] 如果你也在盯这个方向，在评论区扣1
 
 """
-        script += f"""
-【今日总结】
-今天{len(news_items)}条新闻，其实都在指向同一件事：市场正在重新定价。
+        script += """
+【收尾总结】
+把今天这些消息合在一起看，真正该盯的是主线，而不是单条标题带来的短期情绪。
 
 【明日关注】
-明天最重要的一件事：关注资金面的变化，特别是北向资金的方向——那通常是最聪明的钱先走的地方。
-
-{'─'*60}
+- 资金流向是否持续
+- 关键政策或数据是否跟进验证
+- 相关板块是否从情绪走向业绩与基本面
 """
         return script
 
     def _generate_fallback_article(self, news_items: List[Dict]) -> Dict:
-        """备用文章生成"""
         date_str = datetime.now().strftime("%m月%d日")
         titles = [
             f"今天这{len(news_items)}件事，比大多数人想得更重要",
             f"一个被忽视的信号：{news_items[0]['title'][:18]}背后的逻辑",
-            f"{date_str}财经深度：看懂这几件事，看懂接下来的市场"
+            f"{date_str}财经深度：看懂这几件事，看懂接下来的市场",
         ]
-
         content = f"# {titles[0]}\n\n"
         content += f"**{datetime.now().strftime('%Y年%m月%d日')} | 深度解读**\n\n"
-        content += "## 导读\n\n"
-        content += f"今天发生了{len(news_items)}件值得认真对待的事。不是因为它们'重要'这个形容词，而是因为它们合在一起，指向了一个市场还没有完全定价的方向。\n\n"
-
-        for i, news in enumerate(news_items, 1):
+        content += f"今天发生了{len(news_items)}件值得认真对待的事。把它们放在一起看，比逐条看热闹更重要。\n\n"
+        for news in news_items:
             content += f"## {news['title']}\n\n"
             content += f"**来源**：{news['source']} | **分类**：{news.get('category', '财经')}\n\n"
-            content += f"这条新闻的表面意思大家都看到了。但它真正值得关注的地方在于：相关领域正在发生的变化，可能比市场目前定价的更深远。\n\n"
-
-        content += "## 核心判断\n\n"
-        content += f"把今天这{len(news_items)}条新闻放在一起看，你会发现一个共同的底层逻辑：市场的天平正在悄悄移动。\n\n"
+            content += "这条新闻的真正价值，不只在于表面事实，而在于它如何改变市场预期、资金定价和后续验证路径。\n\n"
+        content += "## 核心判断\n\n把今天这些消息放在一起看，市场真正变化的是主线和预期差，而不只是热闹本身。\n\n"
         content += "*本文内容仅供参考，不构成投资建议。*\n"
-
         return {"titles": titles, "content": content, "html": self._markdown_to_html(content)}
 
     def _generate_fallback_deep_dive(self, news_items: List[Dict]) -> str:
-        """备用深度长文"""
         topic = news_items[0]['title']
         date_str = datetime.now().strftime("%Y年%m月%d日")
         return f"""# 深度分析：{topic}
 
 **{date_str} | 原创深度研究**
 
----
+## 一、先说结论
+市场最容易被高估的，是短期情绪；最容易被低估的，是主线变化的持续性。
 
-## 破题：大多数人的理解可能只对了一半
+## 二、事件到底改变了什么
+这件事改变的不只是表面信息，而是市场对后续政策、行业景气度和资金偏好的预期。
 
-"{topic[:30]}"——这件事的表面含义，相信大家都已经看过很多报道了。但我想从另一个角度来讲这件事。
+## 三、市场为什么会对它敏感
+因为它连接的是预期差，而不是静态事实。
 
-大多数报道关注的是这件事"是什么"。我更想讨论的是：它"为什么现在发生"，以及"它在告诉我们什么"。
+## 四、真正的机会在哪里
+机会不在标题最热的地方，而在后续更容易被验证的方向。
 
-## 溯源
+## 五、最大的风险与误判点
+最大的误判，是把一次性情绪催化当成长期趋势。
 
-这件事不是凭空出现的。如果把时间线拉长来看，会发现它其实是过去6-12个月一系列动作的自然结果。
+## 六、接下来怎么跟踪验证
+重点看政策、资金流、订单、价格和盈利验证节奏。
 
-## 深度拆解
-
-**对不同参与者的影响各不相同。** 对于普通散户、机构投资者、产业链上下游，这件事的含义是完全不一样的。
-
-## 先行指标
-
-如果想知道这件事的走向，建议关注以下3个具体信号：
-1. 相关政策的后续跟进情况
-2. 主要参与者的实际行动（而不是表态）
-3. 资金流向的变化——这通常是最诚实的信号
-
-## 核心结论
-
-我的判断是：这件事的长期意义，可能远比短期市场反应所显示的更大。6个月后回头看，今天可能是一个值得记住的时间节点。
-
----
-*本文为AI辅助生成，仅供参考。*
+## 七、总结
+如果6个月后回头看，今天更可能是一个预期重定价的起点，而不是单日噪音。
 """
 
-    def _generate_fallback_ppt(self, news_items: List[Dict], focus_topic: str = "") -> str:
-        """备用PPT脚本"""
+    def _generate_fallback_ppt_script(self, news_items: List[Dict], focus_topic: str = "") -> str:
         topic = focus_topic or news_items[0]['title']
-        date_str = datetime.now().strftime("%Y年%m月%d日")
-        return f"""# PPT脚本：{topic[:30]}
-
-**{date_str} | 财经深度演讲**
-
----
-
-┌─────────────────────────────────────────┐
-│ 【第1张 · 封面】                          │
-│ 标题：{topic[:20]}——它比你想的更重要      │
-├─────────────────────────────────────────┤
-│ 🎯 核心信息：今天要揭示一个被低估的信号   │
-│ 📌 要点：                               │
-│   • 表面是X，本质是Y                    │
-│   • 历史上出现过类似信号                 │
-│   • 接下来3个月是关键窗口               │
-│ 🎤 口播：开场不说"大家好"，直接抛出数字  │
-│ 📊 视觉：深色背景+大字主题，简洁有力     │
-└─────────────────────────────────────────┘
-
-【第2张 · 结论前置】
-今天3个核心判断：
-1. [具体判断1]
-2. [具体判断2]
-3. [具体判断3]
-
-【第3-{2+len(news_items[:4])}张 · 逐条解析】
-每条新闻一张，重点说"为什么重要"而非"是什么"
-
-【最后一张 · 记忆点】
-金句：[今天最核心的一句判断]
-先行指标：[3个具体可观察的信号]
-
----
-*以上为AI生成的PPT脚本框架，请根据实际情况补充具体数据。*
+        return f"""【第1张 · 封面】
+标题：{topic[:20]}——它比你想的更重要
+💡 核心论点：今天真正要讲的是主线，而不是碎片新闻
+📌 屏幕要点：
+• 先看结论
+• 再看论证
+• 最后看行动
+🎤 讲者逐字稿：今天我们不一条条念新闻，而是把这些消息重新放回同一张地图里，看看到底哪条线最值得你花时间。
+📊 可视化建议：深色背景 + 大标题 + 一句判断。
 """
 
 
-# 全局实例
 generator = ContentGenerator()

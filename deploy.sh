@@ -37,12 +37,11 @@ pip3 install -r requirements.txt
 if [ ! -f ".env" ]; then
     echo "📝 创建环境变量文件..."
     cat > .env << 'EOF'
-# AI 配置（默认豆包）
-AI_PROVIDER=doubao
-DOUBAO_API_KEY=your-api-key-here
-DOUBAO_API_BASE=https://ark.cn-beijing.volces.com/api/v3
-DOUBAO_ENDPOINT_ID=
-DOUBAO_MODEL=doubao-1-5-pro-32k-250115
+# AI 配置（推荐智谱 GLM）
+AI_PROVIDER=zhipu
+ZHIPU_API_KEY=your-api-key-here
+ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
+ZHIPU_MODEL=glm-4.7
 
 # 服务配置
 PORT=8000

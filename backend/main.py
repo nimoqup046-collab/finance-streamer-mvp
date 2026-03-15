@@ -3,16 +3,21 @@
 FastAPI 主入口
 """
 import asyncio
+import json
 import sys
 import os
 import logging
+import time
 from pathlib import Path
+from urllib.parse import quote
+from collections import defaultdict, deque
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Body, Query
+from fastapi import FastAPI, HTTPException, Depends, Header, Body, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -58,7 +63,7 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 # 请求模型
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive, ppt
+    content_type: str  # stream_script, article, deep_dive, ppt_script, all
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
@@ -77,6 +82,10 @@ news_cache: List[dict] = []
 cache_time: datetime = None
 fallback_used_last_fetch: bool = False
 _cache_lock: asyncio.Lock = None
+_rate_limit_lock: asyncio.Lock = None
+_generate_requests = defaultdict(deque)
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_MAX_REQUESTS = 6
 
 
 def _get_cache_lock() -> asyncio.Lock:
@@ -85,6 +94,54 @@ def _get_cache_lock() -> asyncio.Lock:
     if _cache_lock is None:
         _cache_lock = asyncio.Lock()
     return _cache_lock
+
+
+def _get_rate_limit_lock() -> asyncio.Lock:
+    global _rate_limit_lock
+    if _rate_limit_lock is None:
+        _rate_limit_lock = asyncio.Lock()
+    return _rate_limit_lock
+
+
+def _get_client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+async def enforce_generate_rate_limit(request: Request):
+    client_key = _get_client_key(request)
+    now = time.monotonic()
+    async with _get_rate_limit_lock():
+        bucket = _generate_requests[client_key]
+        while bucket and now - bucket[0] > RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            logger.warning("Rate limit exceeded for client=%s", client_key)
+            raise HTTPException(status_code=429, detail="生成请求过于频繁，请稍后再试")
+        bucket.append(now)
+
+
+async def _resolve_selected_news(news_ids: List[str]) -> List[dict]:
+    global news_cache
+
+    if not news_cache:
+        await refresh_news_cache()
+
+    selected_news = [n for n in news_cache if n["id"] in news_ids]
+    if not selected_news:
+        await refresh_news_cache(force=True)
+        selected_news = [n for n in news_cache if n["id"] in news_ids]
+    if not selected_news:
+        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+    return selected_news
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 async def refresh_news_cache(force: bool = False) -> List[dict]:
@@ -109,12 +166,15 @@ async def refresh_news_cache(force: bool = False) -> List[dict]:
             fallback_used = True
         else:
             try:
+                started = time.monotonic()
                 news_list = await fetcher.fetch_all_news()
+                logger.info("fetch_all_news completed in %.2fs", time.monotonic() - started)
                 if not news_list:
                     raise RuntimeError("未获取到新闻")
             except Exception:
                 news_list = await fetcher.fetch_mock_news()
                 fallback_used = True
+                logger.warning("真实新闻抓取失败，回退 mock 数据")
 
         news_cache = news_list
         cache_time = datetime.now()
@@ -133,7 +193,11 @@ async def health_check():
 
 # 获取新闻列表
 @app.get("/api/news")
-async def get_news(refresh: bool = False):
+async def get_news(
+    refresh: bool = False,
+    limit: int = Query(100, ge=1, le=200),
+    sort: str = Query("hot", pattern="^(hot|latest)$"),
+):
     """获取今日财经新闻"""
     global news_cache, cache_time, fallback_used_last_fetch
 
@@ -141,10 +205,17 @@ async def get_news(refresh: bool = False):
     if not refresh and news_cache and cache_time:
         cache_age = (datetime.now() - cache_time).total_seconds()
         if cache_age < NEWS_CACHE_MINUTES * 60:
+            data = list(news_cache)
+            if sort == "latest":
+                data.sort(key=lambda item: item.get("time", ""), reverse=True)
+            else:
+                data.sort(key=lambda item: item.get("hot_score", 0), reverse=True)
             return {
-                "data": news_cache,
-                "count": len(news_cache),
+                "data": data[:limit],
+                "count": len(data[:limit]),
+                "total_count": len(data),
                 "cached": True,
+                "sort": sort,
                 "update_time": cache_time.isoformat()
             }
 
@@ -153,11 +224,19 @@ async def get_news(refresh: bool = False):
         await refresh_news_cache(force=True)
         fallback_used = fallback_used_last_fetch
 
+        data = list(news_cache)
+        if sort == "latest":
+            data.sort(key=lambda item: item.get("time", ""), reverse=True)
+        else:
+            data.sort(key=lambda item: item.get("hot_score", 0), reverse=True)
+
         return {
-            "data": news_cache,
-            "count": len(news_cache),
+            "data": data[:limit],
+            "count": len(data[:limit]),
+            "total_count": len(data),
             "cached": False,
             "fallback": fallback_used,
+            "sort": sort,
             "update_time": cache_time.isoformat()
         }
     except Exception as e:
@@ -170,7 +249,7 @@ async def get_categories():
     """获取新闻分类"""
     return {
         "categories": ["宏观", "A股", "美股", "行业", "个股", "财经"],
-        "sources": ["东方财富网", "新浪财经", "财联社"]
+        "sources": ["东方财富网", "新浪财经", "财联社", "第一财经", "证券时报", "上海证券报"]
     }
 
 
@@ -191,26 +270,14 @@ async def search_news(q: str = Query(..., min_length=1, description="搜索关�
     return {"data": matched, "count": len(matched), "keyword": q}
 
 # 生成内容
-@app.post("/api/generate", dependencies=[Depends(verify_api_key)])
+@app.post("/api/generate", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_content(request: GenerateRequest):
-    """生成指定类型的内容"""
-    global news_cache
-
-    if not news_cache:
-        await refresh_news_cache()
-
-    # 根据ID筛选新闻
-    selected_news = [n for n in news_cache if n["id"] in request.news_ids]
-
-    if not selected_news:
-        await refresh_news_cache(force=True)
-        selected_news = [n for n in news_cache if n["id"] in request.news_ids]
-
-    if not selected_news:
-        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+    """生成指定类型的内容。"""
+    selected_news = await _resolve_selected_news(request.news_ids)
+    requested_type = "ppt_script" if request.content_type == "ppt" else request.content_type
 
     try:
-        if request.content_type == "stream_script":
+        if requested_type == "stream_script":
             content = await generator.generate_stream_script(
                 selected_news,
                 duration=request.duration or 30,
@@ -223,10 +290,11 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        elif request.content_type == "article":
+        if requested_type == "article":
             result = await generator.generate_article(
                 selected_news,
-                title=request.title or ""
+                title=request.title or "",
+                focus_topic=request.focus_topic or "",
             )
             return {
                 "type": "article",
@@ -234,10 +302,10 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        elif request.content_type == "deep_dive":
+        if requested_type == "deep_dive":
             content = await generator.generate_deep_dive(
                 selected_news,
-                focus_topic=request.focus_topic or ""
+                focus_topic=request.focus_topic or "",
             )
             return {
                 "type": "deep_dive",
@@ -246,20 +314,19 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
-        elif request.content_type == "ppt":
-            content = await generator.generate_ppt(
+        if requested_type == "ppt_script":
+            content = await generator.generate_ppt_script(
                 selected_news,
-                focus_topic=request.focus_topic or ""
+                focus_topic=request.focus_topic or request.title or "",
             )
             return {
-                "type": "ppt",
+                "type": "ppt_script",
                 "content": content,
                 "word_count": len(content),
                 "generated_at": datetime.now().isoformat()
             }
 
-        else:
-            raise HTTPException(status_code=400, detail="不支持的内容类型")
+        raise HTTPException(status_code=400, detail="不支持的内容类型")
 
     except HTTPException:
         raise
@@ -268,41 +335,164 @@ async def generate_content(request: GenerateRequest):
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
 
 # 批量生成（一键生成全部）
-@app.post("/api/generate/all", dependencies=[Depends(verify_api_key)])
+@app.post("/api/generate/all", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_all(news_ids: List[str] = Body(...)):
-    """一键生成所有类型的内容"""
-    global news_cache
-
-    if not news_cache:
-        await refresh_news_cache()
-
-    selected_news = [n for n in news_cache if n["id"] in news_ids]
-
-    if not selected_news:
-        await refresh_news_cache(force=True)
-        selected_news = [n for n in news_cache if n["id"] in news_ids]
-
-    if not selected_news:
-        raise HTTPException(status_code=400, detail="未找到选中的新闻")
+    """一键生成所有类型的内容。"""
+    selected_news = await _resolve_selected_news(news_ids)
 
     try:
-        stream_script, article, deep_dive, ppt = await asyncio.gather(
+        stream_script, article, deep_dive, ppt_script = await asyncio.gather(
             generator.generate_stream_script(selected_news),
             generator.generate_article(selected_news),
             generator.generate_deep_dive(selected_news),
-            generator.generate_ppt(selected_news),
+            generator.generate_ppt_script(selected_news),
         )
-        results = {
+        return {
             "stream_script": stream_script,
             "article": article,
             "deep_dive": deep_dive,
-            "ppt": ppt,
+            "ppt_script": ppt_script,
             "generated_at": datetime.now().isoformat()
         }
-        return results
     except Exception as e:
         logger.error("批量生成失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="内容生成失败，请稍后重试")
+
+
+@app.post("/api/generate/ppt", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
+async def generate_ppt(news_ids: List[str] = Body(...)):
+    """根据选中新闻生成 PPT 并返回下载流。"""
+    selected_news = await _resolve_selected_news(news_ids)
+    started = time.monotonic()
+    try:
+        pptx_bytes = await generator.generate_ppt(selected_news)
+        logger.info("PPT generated in %.2fs for %s news", time.monotonic() - started, len(selected_news))
+        filename = f"财经日报_{datetime.now().strftime('%Y%m%d_%H%M')}.pptx"
+        quoted = quote(filename)
+        return StreamingResponse(
+            iter([pptx_bytes]),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("PPT 生成失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="PPT 生成失败，请稍后重试")
+
+
+@app.post("/api/generate/stream", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
+async def generate_stream(request: Request, payload: GenerateRequest):
+    """通过 SSE 流式返回生成进度和内容。"""
+    selected_news = await _resolve_selected_news(payload.news_ids)
+    requested_type = "ppt_script" if payload.content_type == "ppt" else payload.content_type
+
+    async def event_stream():
+        started = time.monotonic()
+        logger.info("SSE generation started type=%s news_count=%s", requested_type, len(selected_news))
+        try:
+            yield _sse("status", {"step": 0, "text": "准备生成", "tip": "正在校验新闻与参数"})
+
+            if requested_type == "all":
+                yield _sse("status", {"step": 1, "text": "并行生成中", "tip": "直播稿流式输出，其他内容后台并行生成"})
+                article_task = asyncio.create_task(
+                    generator.generate_article(
+                        selected_news,
+                        title=payload.title or "",
+                        focus_topic=payload.focus_topic or "",
+                    )
+                )
+                deep_task = asyncio.create_task(
+                    generator.generate_deep_dive(
+                        selected_news,
+                        focus_topic=payload.focus_topic or "",
+                    )
+                )
+                ppt_script_task = asyncio.create_task(
+                    generator.generate_ppt_script(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
+                )
+
+                raw_script = []
+                async for chunk in generator.stream_stream_script(
+                    selected_news,
+                    duration=payload.duration or 30,
+                    style=payload.style or "专业",
+                ):
+                    if await request.is_disconnected():
+                        logger.info("SSE client disconnected during all-generation stream")
+                        return
+                    raw_script.append(chunk)
+                    yield _sse("chunk", {"result_type": "stream_script", "delta": chunk})
+
+                stream_script = generator._format_stream_script("".join(raw_script), selected_news)
+                yield _sse("result", {"result_type": "stream_script", "result": stream_script})
+
+                article = await article_task
+                yield _sse("result", {"result_type": "article", "result": article})
+
+                deep_dive = await deep_task
+                yield _sse("result", {"result_type": "deep_dive", "result": deep_dive})
+
+                ppt_script = await ppt_script_task
+                yield _sse("result", {"result_type": "ppt_script", "result": ppt_script})
+
+                results = {
+                    "stream_script": stream_script,
+                    "article": article,
+                    "deep_dive": deep_dive,
+                    "ppt_script": ppt_script,
+                    "generated_at": datetime.now().isoformat(),
+                }
+                yield _sse("complete", {"type": "all", "results": results})
+            else:
+                yield _sse("status", {"step": 1, "text": "开始生成", "tip": "正在向模型请求内容"})
+
+                if requested_type == "stream_script":
+                    raw_script = []
+                    async for chunk in generator.stream_stream_script(
+                        selected_news,
+                        duration=payload.duration or 30,
+                        style=payload.style or "专业",
+                    ):
+                        if await request.is_disconnected():
+                            logger.info("SSE client disconnected during stream_script")
+                            return
+                        raw_script.append(chunk)
+                        yield _sse("chunk", {"result_type": "stream_script", "delta": chunk})
+
+                    result = generator._format_stream_script("".join(raw_script), selected_news)
+                elif requested_type == "article":
+                    result = await generator.generate_article(
+                        selected_news,
+                        title=payload.title or "",
+                        focus_topic=payload.focus_topic or "",
+                    )
+                elif requested_type == "deep_dive":
+                    result = await generator.generate_deep_dive(
+                        selected_news,
+                        focus_topic=payload.focus_topic or "",
+                    )
+                elif requested_type == "ppt_script":
+                    result = await generator.generate_ppt_script(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
+                else:
+                    raise HTTPException(status_code=400, detail="不支持的流式内容类型")
+
+                yield _sse("complete", {"type": requested_type, "result": result})
+
+            logger.info("SSE generation finished type=%s in %.2fs", requested_type, time.monotonic() - started)
+        except HTTPException as e:
+            yield _sse("error", {"message": e.detail})
+        except Exception as e:
+            logger.error("SSE generation failed: %s", e, exc_info=True)
+            yield _sse("error", {"message": "流式生成失败，前端将回退普通生成"})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 # 获取系统状态
 @app.get("/api/status")
@@ -317,7 +507,8 @@ async def get_status():
             "article": True,
             "deep_dive": True,
             "ppt": True,
-            "infographic": False
+            "ppt_script": True,
+            "infographic": False  # 待开发
         }
     }
 

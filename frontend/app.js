@@ -13,7 +13,7 @@ function loadSettings() {
         const saved = localStorage.getItem('finance_streamer_settings');
         if (saved) return JSON.parse(saved);
     } catch (_) {}
-    return { duration: 30, style: '专业', apiKey: '' };
+    return { duration: 30, style: '洞察', apiKey: '' };
 }
 
 const PROGRESS_STEPS = [
@@ -32,6 +32,8 @@ createApp({
             selectedNews: [],
             filterCategory: '全部',
             categories: ['全部', '宏观', 'A股', '美股', '行业', '个股', '财经'],
+            newsSort: 'hot',
+            newsLimit: 100,
 
             // 搜索
             searchQuery: '',
@@ -42,20 +44,22 @@ createApp({
 
             // 生成参数
             duration: settings.duration || 30,
-            style: settings.style || '专业',
+            style: settings.style || '洞察',
             apiKey: settings.apiKey || '',
             showSettings: false,
-            styleOptions: ['专业', '轻松', '解读型'],
+            styleOptions: ['洞察', '解读型', '专业', '轻松'],
             durationOptions: [15, 30, 60],
 
             // 状态
             loading: false,
             generating: false,
+            generatingPpt: false,
 
             // 进度步骤
             progressStep: 0,
             progressTimer: null,
             progressSteps: PROGRESS_STEPS,
+            streamingPreview: '',
 
             // 生成结果
             result: null,
@@ -88,7 +92,7 @@ createApp({
                 { key: 'stream_script', label: '📝 直播稿' },
                 { key: 'article', label: '📱 公众号' },
                 { key: 'deep_dive', label: '📄 深度长文' },
-                { key: 'ppt', label: '🖥️ PPT脚本' },
+                { key: 'ppt_script', label: '🖥️ PPT脚本' },
             ],
         };
     },
@@ -126,7 +130,7 @@ createApp({
                 stream_script: '📝 直播稿（刘润×小Lin说融合风格）',
                 article: '📱 公众号文章（深度好文版）',
                 deep_dive: '📄 深度长文（原创研究版）',
-                ppt: '🖥️ PPT演讲脚本',
+                ppt_script: '🖥️ PPT演讲脚本',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -194,15 +198,18 @@ createApp({
         async fetchNews(refresh = false) {
             this.loading = true;
             try {
-                const response = await fetch(`${API_BASE}/api/news?refresh=${refresh}`);
+                const response = await fetch(
+                    `${API_BASE}/api/news?refresh=${refresh}&limit=${this.newsLimit}&sort=${this.newsSort}`
+                );
                 const data = await response.json();
                 if (data.data) {
                     this.news = data.data;
                     if (!refresh && data.cached) {
-                        this.showToastMessage(`已加载缓存数据 (${data.count}条)`, 'info');
+                        this.showToastMessage(`已加载缓存数据 (${data.count}/${data.total_count || data.count}条)`, 'info');
                     } else {
                         const fallbackNote = data.fallback ? '（模拟数据）' : '';
-                        this.showToastMessage(`刷新成功，获取 ${data.count} 条新闻${fallbackNote}`, 'success');
+                        const sortLabel = this.newsSort === 'hot' ? '热点优先' : '最新优先';
+                        this.showToastMessage(`刷新成功，获取 ${data.count}/${data.total_count || data.count} 条新闻（${sortLabel}）${fallbackNote}`, 'success');
                     }
                 }
             } catch (error) {
@@ -214,6 +221,11 @@ createApp({
         },
 
         refreshNews() {
+            this.fetchNews(true);
+        },
+
+        setNewsSort(sort) {
+            this.newsSort = sort;
             this.fetchNews(true);
         },
 
@@ -315,6 +327,107 @@ createApp({
             this.progressStep = PROGRESS_STEPS.length - 1;
         },
 
+        async streamGenerate(payload, handlers = {}) {
+            const response = await fetch(`${API_BASE}/api/generate/stream`, {
+                method: 'POST',
+                headers: this.buildHeaders(),
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok || !response.body) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            const dispatch = (rawEvent) => {
+                if (!rawEvent.trim()) return;
+                const lines = rawEvent.split('\n');
+                let eventName = 'message';
+                let data = '';
+
+                for (const line of lines) {
+                    if (line.startsWith('event:')) {
+                        eventName = line.slice(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        data += line.slice(5).trim();
+                    }
+                }
+
+                if (!data) return;
+                const parsed = JSON.parse(data);
+                const handler = handlers[eventName];
+                if (handler) handler(parsed);
+            };
+
+            while (true) {
+                const { value, done } = await reader.read();
+                buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+                const chunks = buffer.split('\n\n');
+                buffer = chunks.pop() || '';
+                chunks.forEach(dispatch);
+
+                if (done) break;
+            }
+
+            if (buffer.trim()) {
+                dispatch(buffer);
+            }
+        },
+
+        async generateContentFallback(type) {
+            const response = await fetch(`${API_BASE}/api/generate`, {
+                method: 'POST',
+                headers: this.buildHeaders(),
+                body: JSON.stringify({
+                    news_ids: this.selectedNews,
+                    content_type: type,
+                    duration: this.duration,
+                    style: this.style,
+                }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            if (data.content !== undefined || data.titles) {
+                this.result = type === 'article' ? data : (data.content || data);
+                this.saveToHistory(type, this.result);
+                return;
+            }
+            throw new Error('生成失败');
+        },
+
+        async generateAllFallback() {
+            const response = await fetch(`${API_BASE}/api/generate/all`, {
+                method: 'POST',
+                headers: this.buildHeaders(),
+                body: JSON.stringify(this.selectedNews),
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            this.allResults = data;
+            this.activeResultTab = 'stream_script';
+            this.resultType = 'stream_script';
+            this.result = data.stream_script || '生成失败';
+            this.saveToHistory('stream_script', data.stream_script);
+            if (data.article) this.saveToHistory('article', data.article);
+            if (data.deep_dive) this.saveToHistory('deep_dive', data.deep_dive);
+            if (data.ppt_script) this.saveToHistory('ppt_script', data.ppt_script);
+        },
+
         // 生成内容
         async generateContent(type) {
             if (this.selectedCount === 0) {
@@ -327,37 +440,54 @@ createApp({
             this.allResults = null;
             this.resultType = type;
             this.editingContent = false;
+            this.streamingPreview = '';
             this.startProgress();
 
             try {
-                const response = await fetch(`${API_BASE}/api/generate`, {
-                    method: 'POST',
-                    headers: this.buildHeaders(),
-                    body: JSON.stringify({
-                        news_ids: this.selectedNews,
-                        content_type: type,
-                        duration: this.duration,
-                        style: this.style,
-                    }),
-                });
-
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    throw new Error(err.detail || `HTTP ${response.status}`);
-                }
-
-                const data = await response.json();
-
-                if (data.content !== undefined || data.titles) {
-                    this.result = type === 'article' ? data : (data.content || data);
-                    this.saveToHistory(type, this.result);
-                    this.showToastMessage('✅ 生成成功！', 'success');
+                if (type === 'stream_script') {
+                    await this.streamGenerate(
+                        {
+                            news_ids: this.selectedNews,
+                            content_type: type,
+                            duration: this.duration,
+                            style: this.style,
+                        },
+                        {
+                            status: (event) => {
+                                if (typeof event.step === 'number') {
+                                    this.progressStep = event.step;
+                                }
+                            },
+                            chunk: (event) => {
+                                this.streamingPreview += event.delta || '';
+                            },
+                            complete: (event) => {
+                                this.result = event.result;
+                                this.saveToHistory(type, this.result);
+                            },
+                            error: (event) => {
+                                throw new Error(event.message || '流式生成失败');
+                            },
+                        },
+                    );
                 } else {
-                    throw new Error('生成失败');
+                    await this.generateContentFallback(type);
                 }
+                this.showToastMessage('✅ 生成成功！', 'success');
             } catch (error) {
                 console.error('生成失败:', error);
-                this.showToastMessage('❌ 生成失败，请重试', 'error');
+                if (type === 'stream_script') {
+                    try {
+                        this.showToastMessage('流式生成失败，正在回退普通生成…', 'warning');
+                        await this.generateContentFallback(type);
+                        this.showToastMessage('✅ 已回退为普通生成', 'success');
+                    } catch (fallbackError) {
+                        console.error('回退生成失败:', fallbackError);
+                        this.showToastMessage(`❌ 生成失败：${fallbackError.message}`, 'error');
+                    }
+                } else {
+                    this.showToastMessage(`❌ 生成失败：${error.message}`, 'error');
+                }
             } finally {
                 this.generating = false;
                 this.stopProgress();
@@ -375,10 +505,80 @@ createApp({
             this.result = null;
             this.allResults = null;
             this.editingContent = false;
+            this.streamingPreview = '';
             this.startProgress();
 
             try {
-                const response = await fetch(`${API_BASE}/api/generate/all`, {
+                await this.streamGenerate(
+                    {
+                        news_ids: this.selectedNews,
+                        content_type: 'all',
+                        duration: this.duration,
+                        style: this.style,
+                    },
+                    {
+                        status: (event) => {
+                            if (typeof event.step === 'number') {
+                                this.progressStep = event.step;
+                            }
+                        },
+                        chunk: (event) => {
+                            if (event.result_type === 'stream_script') {
+                                this.streamingPreview += event.delta || '';
+                            }
+                        },
+                        result: (event) => {
+                            if (!this.allResults) {
+                                this.allResults = {};
+                            }
+                            this.allResults[event.result_type] = event.result;
+                            if (event.result_type === 'stream_script') {
+                                this.resultType = 'stream_script';
+                                this.activeResultTab = 'stream_script';
+                                this.result = event.result;
+                            }
+                        },
+                        complete: (event) => {
+                            this.allResults = event.results;
+                            this.activeResultTab = 'stream_script';
+                            this.resultType = 'stream_script';
+                            this.result = event.results.stream_script || '生成失败';
+                            this.saveToHistory('stream_script', event.results.stream_script);
+                            this.saveToHistory('article', event.results.article);
+                            this.saveToHistory('deep_dive', event.results.deep_dive);
+                            if (event.results.ppt_script) this.saveToHistory('ppt_script', event.results.ppt_script);
+                        },
+                        error: (event) => {
+                            throw new Error(event.message || '流式生成失败');
+                        },
+                    },
+                );
+                this.showToastMessage('✅ 全部生成完成！', 'success');
+            } catch (error) {
+                console.error('生成失败:', error);
+                try {
+                    this.showToastMessage('流式生成失败，正在回退普通全部生成…', 'warning');
+                    await this.generateAllFallback();
+                    this.showToastMessage('✅ 已回退为普通全部生成', 'success');
+                } catch (fallbackError) {
+                    console.error('全部生成回退失败:', fallbackError);
+                    this.showToastMessage(`❌ 全部生成失败：${fallbackError.message}`, 'error');
+                }
+            } finally {
+                this.generating = false;
+                this.stopProgress();
+            }
+        },
+
+        async generatePpt() {
+            if (this.selectedCount === 0) {
+                this.showToastMessage('请先选择新闻', 'warning');
+                return;
+            }
+
+            this.generatingPpt = true;
+            try {
+                const response = await fetch(`${API_BASE}/api/generate/ppt`, {
                     method: 'POST',
                     headers: this.buildHeaders(),
                     body: JSON.stringify(this.selectedNews),
@@ -389,19 +589,30 @@ createApp({
                     throw new Error(err.detail || `HTTP ${response.status}`);
                 }
 
-                const data = await response.json();
-                this.allResults = data;
-                this.activeResultTab = 'stream_script';
-                this.resultType = 'stream_script';
-                this.result = data.stream_script || '生成失败';
-                this.saveToHistory('stream_script', data.stream_script);
-                this.showToastMessage('✅ 全部生成完成！', 'success');
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+                let filename = `财经日报_${this.getDateTimeString()}.pptx`;
+                if (match) {
+                    const raw = decodeURIComponent(match[1]).replace(/['"]/g, '').trim();
+                    filename = raw.replace(/[/\\:*?"<>|]/g, '_');
+                }
+
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                this.showToastMessage('PPT 已生成并下载！', 'success');
             } catch (error) {
-                console.error('生成失败:', error);
-                this.showToastMessage('❌ 生成失败，请重试', 'error');
+                console.error('PPT生成失败:', error);
+                this.showToastMessage(`PPT生成失败：${error.message}`, 'error');
             } finally {
-                this.generating = false;
-                this.stopProgress();
+                this.generatingPpt = false;
             }
         },
 
@@ -414,7 +625,7 @@ createApp({
                 if (tab === 'stream_script') this.result = this.allResults.stream_script;
                 else if (tab === 'article') this.result = this.allResults.article;
                 else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
-                else if (tab === 'ppt') this.result = this.allResults.ppt;
+                else if (tab === 'ppt_script') this.result = this.allResults.ppt_script;
             }
         },
 
@@ -484,7 +695,7 @@ createApp({
                 stream_script: `直播稿_${this.getDateTimeString()}.txt`,
                 article: `公众号文章_${this.getDateTimeString()}.md`,
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
-                ppt: `PPT脚本_${this.getDateTimeString()}.md`,
+                ppt_script: `PPT脚本_${this.getDateTimeString()}.md`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -505,7 +716,7 @@ createApp({
                 stream_script: '直播稿',
                 article: '公众号文章',
                 deep_dive: '深度长文',
-                ppt: 'PPT脚本',
+                ppt_script: 'PPT脚本',
             };
             const text = typeof content === 'string'
                 ? content
