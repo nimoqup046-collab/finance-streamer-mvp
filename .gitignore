@@ -28,6 +28,7 @@ output/
 *.txt
 *.md
 !README.md
+!docs/claude-core-baseline.md
 !requirements.txt
 
 # 系统文件
