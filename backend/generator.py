@@ -688,16 +688,55 @@ class ContentGenerator:
             response_format = {"type": "json_object"} if self.provider != "anthropic" else None
             content = await self._call_ai(
                 prompt,
-                max_tokens=1200,
+                max_tokens=1800,
                 system_prompt=self._system_prompt(),
-                temperature=0.2,
+                temperature=0.1,
                 response_format=response_format,
                 content_type=route_content_type,
             )
-            return self._normalize_editorial_brief(self._extract_json(content), news_items, goal)
+            try:
+                parsed = self._extract_json(content)
+            except Exception as parse_error:
+                repaired_content = await self._repair_json_payload(
+                    content,
+                    route_content_type=route_content_type,
+                )
+                if repaired_content:
+                    logger.info("Editorial brief parse repaired via json_fixer")
+                    parsed = self._extract_json(repaired_content)
+                else:
+                    raise parse_error
+            return self._normalize_editorial_brief(parsed, news_items, goal)
         except Exception as e:
             logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
             return self._fallback_editorial_brief(news_items, goal)
+
+    async def _repair_json_payload(self, raw_text: str, route_content_type: Optional[str]) -> Optional[str]:
+        if not raw_text:
+            return None
+
+        prompt = f"""你是严格 JSON 修复器。请把下面文本修复为一个合法 JSON 对象。
+
+要求：
+1) 只输出 JSON 对象本身
+2) 不要 markdown，不要解释
+3) 保留原字段语义，缺失字段可补合理默认值
+
+原始文本：
+{raw_text[:5000]}
+"""
+        response_format = {"type": "json_object"} if self.provider != "anthropic" else None
+        try:
+            return await self._call_ai(
+                prompt,
+                max_tokens=1600,
+                system_prompt="你是严格 JSON 语法修复器，输出必须是可被 json.loads 解析的 JSON 对象。",
+                temperature=0.0,
+                response_format=response_format,
+                content_type=route_content_type,
+            )
+        except Exception:
+            return None
 
     def _build_stream_script_prompt(
         self,
