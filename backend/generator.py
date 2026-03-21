@@ -27,6 +27,9 @@ from backend.config import (
     OPENROUTER_ENABLE_QUALITY_ROUTING,
     OPENROUTER_STREAM_MODELS,
     OPENROUTER_ARTICLE_MODELS,
+    QUALITY_ROUTING_AUTO_FALLBACK,
+    QUALITY_ROUTING_HOURLY_BUDGET_USD,
+    QUALITY_ROUTING_DAILY_BUDGET_USD,
 )
 
 logger = logging.getLogger(__name__)
@@ -226,6 +229,10 @@ class ContentGenerator:
             "stream_script": OPENROUTER_STREAM_MODELS,
             "article": OPENROUTER_ARTICLE_MODELS,
         }
+        self.quality_budget_auto_fallback = QUALITY_ROUTING_AUTO_FALLBACK
+        self.quality_budget_hourly_usd = max(0.0, float(QUALITY_ROUTING_HOURLY_BUDGET_USD))
+        self.quality_budget_daily_usd = max(0.0, float(QUALITY_ROUTING_DAILY_BUDGET_USD))
+        self._quality_budget_exceeded_logged = False
         self.usage_events: deque = deque(maxlen=200)
         self.client = self._init_client()
         self.openrouter_client = self._init_openrouter_client()
@@ -276,6 +283,7 @@ class ContentGenerator:
             "enabled": self.openrouter_enabled,
             "provider": "openrouter" if self.openrouter_enabled else None,
             "routed_types": list(self.quality_routed_types) if self.openrouter_enabled else [],
+            "budget": self._quality_budget_status(),
         }
 
     def cost_status(self) -> Dict[str, Any]:
@@ -295,6 +303,7 @@ class ContentGenerator:
             "by_model": window_summary["by_model"],
             "recent_1h": recent_1h_summary,
             "recent_24h": recent_24h_summary,
+            "budget_guard": self._quality_budget_status(),
             "recent_events": events[-20:],
         }
 
@@ -368,12 +377,75 @@ class ContentGenerator:
         return list(self.openrouter_models.get(content_type, []))
 
     def _should_use_quality_router(self, content_type: Optional[str]) -> bool:
-        return bool(
+        can_route = bool(
             self.openrouter_enabled
             and content_type in self.quality_routed_types
             and self.openrouter_client is not None
             and self._quality_route_models(content_type)
         )
+        if not can_route:
+            return False
+
+        budget = self._quality_budget_status()
+        if budget["exceeded"]:
+            if not self._quality_budget_exceeded_logged:
+                logger.warning(
+                    "Quality routing disabled by budget guard: reason=%s recent_1h=%.6f recent_24h=%.6f",
+                    budget.get("reason"),
+                    budget.get("recent_1h_usd", 0.0),
+                    budget.get("recent_24h_usd", 0.0),
+                )
+                self._quality_budget_exceeded_logged = True
+            return False
+
+        if self._quality_budget_exceeded_logged:
+            logger.info("Quality routing budget guard recovered; OpenRouter routing resumed")
+            self._quality_budget_exceeded_logged = False
+
+        return True
+
+    def _quality_budget_status(self) -> Dict[str, Any]:
+        recent_1h_usd = self._recent_estimated_usd(3600)
+        recent_24h_usd = self._recent_estimated_usd(86400)
+        budget_enabled = self.quality_budget_auto_fallback and (
+            self.quality_budget_hourly_usd > 0 or self.quality_budget_daily_usd > 0
+        )
+
+        exceeded = False
+        reason = None
+        if budget_enabled and self.quality_budget_hourly_usd > 0 and recent_1h_usd >= self.quality_budget_hourly_usd:
+            exceeded = True
+            reason = "hourly_limit"
+        if (
+            budget_enabled
+            and not exceeded
+            and self.quality_budget_daily_usd > 0
+            and recent_24h_usd >= self.quality_budget_daily_usd
+        ):
+            exceeded = True
+            reason = "daily_limit"
+
+        return {
+            "auto_fallback": self.quality_budget_auto_fallback,
+            "budget_enabled": budget_enabled,
+            "hourly_limit_usd": self.quality_budget_hourly_usd,
+            "daily_limit_usd": self.quality_budget_daily_usd,
+            "recent_1h_usd": round(recent_1h_usd, 6),
+            "recent_24h_usd": round(recent_24h_usd, 6),
+            "exceeded": exceeded,
+            "reason": reason,
+        }
+
+    def _recent_estimated_usd(self, window_seconds: int) -> float:
+        now = time.time()
+        total = 0.0
+        for event in self.usage_events:
+            ts = float(event.get("timestamp_epoch") or 0.0)
+            if ts <= 0:
+                continue
+            if now - ts <= window_seconds and event.get("estimated_usd") is not None:
+                total += float(event["estimated_usd"])
+        return total
 
     def _extract_usage_tokens(self, usage: Any) -> Dict[str, int]:
         if usage is None:

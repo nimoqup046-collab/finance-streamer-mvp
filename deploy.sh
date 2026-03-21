@@ -51,6 +51,9 @@ ZHIPU_MODEL=glm-5
 # OPENROUTER_APP_TITLE=finance-streamer-mvp
 # OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1
 # OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview
+# QUALITY_ROUTING_AUTO_FALLBACK=true
+# QUALITY_ROUTING_HOURLY_BUDGET_USD=0.20
+# QUALITY_ROUTING_DAILY_BUDGET_USD=1.00
 
 # 服务配置
 PORT=8000

@@ -582,6 +582,7 @@ async def get_status():
         "quality_routing": quality_routing["enabled"],
         "quality_router_provider": quality_routing["provider"],
         "quality_routed_types": quality_routing["routed_types"],
+        "quality_routing_budget": quality_routing.get("budget", {}),
         "features": {
             "stream_script": True,
             "article": True,

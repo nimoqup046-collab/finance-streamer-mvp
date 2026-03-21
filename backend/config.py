@@ -20,6 +20,15 @@ def _parse_csv(value: str, default: list[str]) -> list[str]:
     parsed = [item.strip() for item in value.split(",") if item.strip()]
     return parsed or list(default)
 
+
+def _parse_float(value: str, default: float = 0.0) -> float:
+    if value is None or not str(value).strip():
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 # AI 提供商配置
 AI_PROVIDER = os.getenv("AI_PROVIDER", "zhipu").lower()  # doubao / zhipu / anthropic / openai / openrouter
 
@@ -67,6 +76,9 @@ OPENROUTER_ARTICLE_MODELS = _parse_csv(
     os.getenv("OPENROUTER_ARTICLE_MODELS"),
     DEFAULT_OPENROUTER_ARTICLE_MODELS,
 )
+QUALITY_ROUTING_AUTO_FALLBACK = _parse_bool(os.getenv("QUALITY_ROUTING_AUTO_FALLBACK"), True)
+QUALITY_ROUTING_HOURLY_BUDGET_USD = _parse_float(os.getenv("QUALITY_ROUTING_HOURLY_BUDGET_USD"), 0.0)
+QUALITY_ROUTING_DAILY_BUDGET_USD = _parse_float(os.getenv("QUALITY_ROUTING_DAILY_BUDGET_USD"), 0.0)
 
 # 根据提供商选择配置
 if AI_PROVIDER == "anthropic":
