@@ -120,6 +120,31 @@ async def run_benchmark(output_path: Path) -> None:
     output_path.write_text("\n".join(lines))
 
 
+async def run_single_case(case_id: str) -> Dict[str, Any]:
+    from backend.generator import generator
+
+    cases = load_json(CASES_PATH)["cases"]
+    case = next((item for item in cases if item["id"] == case_id), None)
+    if not case:
+        raise ValueError(f"未找到 case_id={case_id}")
+
+    news_items = case["news_items"]
+    stream_script = await generator.generate_stream_script(
+        news_items,
+        duration=20,
+        style="洞察",
+    )
+    article = await generator.generate_article(
+        news_items,
+        focus_topic=case["expected_mainline"],
+    )
+    return {
+        "case": case,
+        "stream_script": stream_script,
+        "article": article,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="运行固定样例集内容质量 benchmark")
     parser.add_argument(
@@ -132,6 +157,10 @@ def main() -> None:
         default=f"/tmp/content-quality-benchmark-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md",
         help="报告输出路径",
     )
+    parser.add_argument(
+        "--case-id",
+        help="只跑单个固定样例，用于快速迭代，例如 ai-compute-rerating",
+    )
     args = parser.parse_args()
 
     cases = load_json(CASES_PATH)
@@ -143,6 +172,18 @@ def main() -> None:
         print("DRY_RUN_OK")
         print(f"cases={len(cases['cases'])}")
         print(f"rubric_dimensions={len(rubric['dimensions'])}")
+        return
+
+    if args.case_id:
+        result = asyncio.run(run_single_case(args.case_id))
+        print(f"CASE_ID={result['case']['id']}")
+        print("---STREAM---")
+        print(result["stream_script"])
+        print("---ARTICLE_TITLES---")
+        for title in result["article"].get("titles", []):
+            print(title)
+        print("---ARTICLE_CONTENT---")
+        print(result["article"].get("content", ""))
         return
 
     output_path = Path(args.output)
