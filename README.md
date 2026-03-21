@@ -12,8 +12,8 @@
 |------|------|
 | **📰 新闻采集** | 并发从东方财富、新浪财经、财联社、第一财经获取最新新闻 |
 | **🔍 关键词搜索** | 实时在新闻列表中按标题/分类/来源搜索 |
-| **📝 直播稿生成** | 基于“编辑部 brief + 主线判断”生成更适合口播的直播稿 |
-| **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文 |
+| **📝 直播稿生成** | 基于“编辑部 brief + 主线判断”生成更适合口播的直播稿，可选 OpenRouter 多模型质量路由 |
+| **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文，可选 OpenRouter 多模型质量路由 |
 | **📄 深度长文** | 输出带框架、机会与风险并重的深度研判文章 |
 | **⚡ 快报速评** | 30秒读完的短内容速评，适合社媒直发和群内快读 |
 | **🚀 一键全部生成** | 四种格式**并行**生成，比逐个生成更省时 |
@@ -34,7 +34,16 @@ cat > .env << 'EOF'
 AI_PROVIDER=zhipu
 ZHIPU_API_KEY=your-api-key-here
 ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
-ZHIPU_MODEL=glm-4.7
+ZHIPU_MODEL=glm-5
+
+# 可选：只把直播稿 / 公众号切到 OpenRouter 质量路由
+OPENROUTER_ENABLE_QUALITY_ROUTING=false
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_API_BASE=https://openrouter.ai/api/v1
+OPENROUTER_HTTP_REFERER=
+OPENROUTER_APP_TITLE=finance-streamer-mvp
+OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1
+OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview
 EOF
 
 # 2. 安装依赖
@@ -64,8 +73,9 @@ python3 -m http.server 4173
 2. 登录 [Railway.app](https://railway.app)
 3. 新建项目 → 选择 GitHub 仓库
 4. 使用仓库内的 `Dockerfile` 作为唯一部署入口
-5. 在环境变量中设置 `AI_PROVIDER` 和对应的 API Key（推荐智谱：`ZHIPU_API_KEY`）
-6. 部署完成后，可得到类似 `https://finance-streamer-mvp-production.up.railway.app` 的网址
+5. 在环境变量中设置 `AI_PROVIDER` 和对应的 API Key（推荐智谱：`ZHIPU_API_KEY`；默认模型建议 `glm-5`，若账号权限不足可临时切到 `glm-4.7`）
+6. 如果希望只把“直播稿 / 公众号”切到更强模型，可额外配置 `OPENROUTER_*` 变量并开启 `OPENROUTER_ENABLE_QUALITY_ROUTING=true`
+7. 部署完成后，可得到类似 `https://finance-streamer-mvp-production.up.railway.app` 的网址
 
 ### 方式二：阿里云轻量服务器
 
@@ -78,6 +88,8 @@ chmod +x deploy.sh
 # 2. 配置环境变量
 export AI_PROVIDER="zhipu"
 export ZHIPU_API_KEY="your-key-here"
+# export OPENROUTER_ENABLE_QUALITY_ROUTING="true"
+# export OPENROUTER_API_KEY="your-openrouter-key"
 
 # 3. 重启服务
 systemctl restart finance-assistant
@@ -120,7 +132,14 @@ finance-streamer-mvp/
 | `AI_PROVIDER` | AI 提供商 | `zhipu` |
 | `ZHIPU_API_KEY` | 智谱 API Key | `xxx` |
 | `ZHIPU_API_BASE` | 智谱 API Base | `https://open.bigmodel.cn/api/paas/v4` |
-| `ZHIPU_MODEL` | 智谱模型（推荐中文写作） | `glm-4.7` |
+| `ZHIPU_MODEL` | 智谱模型（默认推荐） | `glm-5` |
+| `OPENROUTER_ENABLE_QUALITY_ROUTING` | 是否开启高质量内容路由（仅直播稿/公众号） | `false` |
+| `OPENROUTER_API_KEY` | OpenRouter API Key | `sk-or-xxx` |
+| `OPENROUTER_API_BASE` | OpenRouter API Base | `https://openrouter.ai/api/v1` |
+| `OPENROUTER_HTTP_REFERER` | OpenRouter 可选来源标识 | `` |
+| `OPENROUTER_APP_TITLE` | OpenRouter 应用标题 | `finance-streamer-mvp` |
+| `OPENROUTER_STREAM_MODELS` | 直播稿候选模型列表 | `anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1` |
+| `OPENROUTER_ARTICLE_MODELS` | 公众号候选模型列表 | `anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview` |
 | `DOUBAO_API_KEY` | 豆包 API Key | `xxx` |
 | `DOUBAO_API_BASE` | 豆包 API Base | `https://ark.cn-beijing.volces.com/api/v3` |
 | `DOUBAO_ENDPOINT_ID` | 方舟推理接入点 ID，优先于模型名 | `ep-202503...` |
@@ -147,6 +166,18 @@ finance-streamer-mvp/
 5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
 6. 等待 AI 生成完成
 7. 通过标签页切换不同格式，复制、下载或导出 PPT
+
+### OpenRouter 质量路由
+
+- 开启 `OPENROUTER_ENABLE_QUALITY_ROUTING=true` 后：
+  - `stream_script` 和 `article` 会优先走 OpenRouter 多模型 fallback
+  - `deep_dive`、`ppt_script`、`flash_report` 继续走基础 provider
+- 推荐 Railway 组合：
+  - `AI_PROVIDER=zhipu`
+  - `OPENROUTER_ENABLE_QUALITY_ROUTING=true`
+  - `OPENROUTER_API_KEY=...`
+  - `OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1`
+  - `OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview`
 
 ### 内容质量开发验收
 

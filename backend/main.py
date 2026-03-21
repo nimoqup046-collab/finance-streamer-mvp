@@ -574,10 +574,14 @@ async def generate_stream(request: Request, payload: GenerateRequest):
 @app.get("/api/status")
 async def get_status():
     """获取系统状态"""
+    quality_routing = generator.quality_routing_status()
     return {
         "status": "running",
         "news_count": len(news_cache),
         "last_update": cache_time.isoformat() if cache_time else None,
+        "quality_routing": quality_routing["enabled"],
+        "quality_router_provider": quality_routing["provider"],
+        "quality_routed_types": quality_routing["routed_types"],
         "features": {
             "stream_script": True,
             "article": True,

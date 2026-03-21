@@ -37,11 +37,20 @@ pip3 install -r requirements.txt
 if [ ! -f ".env" ]; then
     echo "📝 创建环境变量文件..."
     cat > .env << 'EOF'
-# AI 配置（推荐智谱 GLM）
+# AI 配置（推荐智谱 GLM；若账号权限不足可改为 glm-4.7）
 AI_PROVIDER=zhipu
 ZHIPU_API_KEY=your-api-key-here
 ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
-ZHIPU_MODEL=glm-4.7
+ZHIPU_MODEL=glm-5
+
+# 可选：开启 OpenRouter 高质量内容路由（仅直播稿 / 公众号）
+# OPENROUTER_ENABLE_QUALITY_ROUTING=true
+# OPENROUTER_API_KEY=your-openrouter-api-key
+# OPENROUTER_API_BASE=https://openrouter.ai/api/v1
+# OPENROUTER_HTTP_REFERER=
+# OPENROUTER_APP_TITLE=finance-streamer-mvp
+# OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1
+# OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview
 
 # 服务配置
 PORT=8000
