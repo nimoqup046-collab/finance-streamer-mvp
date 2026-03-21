@@ -179,6 +179,22 @@ finance-streamer-mvp/
   - `OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1`
   - `OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview`
 
+### OpenRouter 档位一键切换（省钱/高质量）
+
+- 脚本：`scripts/switch_openrouter_profile.sh`
+- 默认作用于 `production` 环境和 `finance-streamer-mvp` 服务。
+
+```bash
+# 省钱档（Gemini 优先）
+./scripts/switch_openrouter_profile.sh cheap
+
+# 高质量档（Claude 优先）
+./scripts/switch_openrouter_profile.sh quality
+
+# 只改变量，不立即部署
+./scripts/switch_openrouter_profile.sh cheap --no-deploy
+```
+
 ### 内容质量开发验收
 
 - 固定样例集：`benchmarks/content_quality_cases.json`
