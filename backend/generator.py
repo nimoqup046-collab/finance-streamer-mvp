@@ -283,13 +283,18 @@ class ContentGenerator:
         now = time.time()
         recent_1h_events = [event for event in events if (now - float(event.get("timestamp_epoch") or 0.0)) <= 3600]
         recent_24h_events = [event for event in events if (now - float(event.get("timestamp_epoch") or 0.0)) <= 86400]
+        window_summary = self._summarize_cost_events(events)
+        recent_1h_summary = self._summarize_cost_events(recent_1h_events)
+        recent_24h_summary = self._summarize_cost_events(recent_24h_events)
 
         return {
             "window_size": len(events),
             "pricing_source": "static_estimate_per_1k_tokens",
-            "totals": self._summarize_cost_events(events),
-            "recent_1h": self._summarize_cost_events(recent_1h_events),
-            "recent_24h": self._summarize_cost_events(recent_24h_events),
+            "totals": window_summary["totals"],
+            "by_content_type": window_summary["by_content_type"],
+            "by_model": window_summary["by_model"],
+            "recent_1h": recent_1h_summary,
+            "recent_24h": recent_24h_summary,
             "recent_events": events[-20:],
         }
 
