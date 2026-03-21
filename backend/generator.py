@@ -9,10 +9,23 @@ import io
 import json
 import logging
 import re
+import asyncio
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from backend.config import AI_PROVIDER, AI_API_BASE, AI_API_KEY, AI_MODEL
+from backend.config import (
+    AI_PROVIDER,
+    AI_API_BASE,
+    AI_API_KEY,
+    AI_MODEL,
+    OPENROUTER_API_BASE,
+    OPENROUTER_API_KEY,
+    OPENROUTER_HTTP_REFERER,
+    OPENROUTER_APP_TITLE,
+    OPENROUTER_ENABLE_QUALITY_ROUTING,
+    OPENROUTER_STREAM_MODELS,
+    OPENROUTER_ARTICLE_MODELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,15 +208,75 @@ class ContentGenerator:
         self.model = AI_MODEL
         self.api_key = AI_API_KEY
         self.api_base = AI_API_BASE
+        self.quality_routed_types = ["stream_script", "article"]
+        self.openrouter_enabled = OPENROUTER_ENABLE_QUALITY_ROUTING and bool(OPENROUTER_API_KEY)
+        self.openrouter_models = {
+            "stream_script": OPENROUTER_STREAM_MODELS,
+            "article": OPENROUTER_ARTICLE_MODELS,
+        }
         self.client = self._init_client()
+        self.openrouter_client = self._init_openrouter_client()
 
     def _init_client(self):
         if self.provider == "anthropic":
             from anthropic import AsyncAnthropic
-            return AsyncAnthropic(api_key=self.api_key)
+            return AsyncAnthropic(api_key=self.api_key, timeout=90.0, max_retries=1)
 
         from openai import AsyncOpenAI
-        return AsyncOpenAI(api_key=self.api_key, base_url=self.api_base or None)
+        default_headers = None
+        if self.provider == "openrouter":
+            default_headers = self._openrouter_headers()
+        return AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base or None,
+            timeout=90.0,
+            max_retries=1,
+            default_headers=default_headers,
+        )
+
+    def _init_openrouter_client(self):
+        if not self.openrouter_enabled:
+            return None
+
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_API_BASE,
+            timeout=90.0,
+            max_retries=1,
+            default_headers=self._openrouter_headers(),
+        )
+
+    def _openrouter_headers(self) -> Dict[str, str]:
+        # OpenRouter 兼容头：新旧标题头都带上，避免网关侧差异导致标题丢失
+        headers = {
+            "X-Title": OPENROUTER_APP_TITLE,
+            "X-OpenRouter-Title": OPENROUTER_APP_TITLE,
+        }
+        if OPENROUTER_HTTP_REFERER:
+            headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
+        return headers
+
+    def quality_routing_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.openrouter_enabled,
+            "provider": "openrouter" if self.openrouter_enabled else None,
+            "routed_types": list(self.quality_routed_types) if self.openrouter_enabled else [],
+        }
+
+    def _quality_route_models(self, content_type: Optional[str]) -> List[str]:
+        if not content_type:
+            return []
+        return list(self.openrouter_models.get(content_type, []))
+
+    def _should_use_quality_router(self, content_type: Optional[str]) -> bool:
+        return bool(
+            self.openrouter_enabled
+            and content_type in self.quality_routed_types
+            and self.openrouter_client is not None
+            and self._quality_route_models(content_type)
+        )
 
     def _error_context(self) -> str:
         return (
@@ -324,7 +397,13 @@ class ContentGenerator:
                 raise
             return json.loads(match.group(0))
 
-    async def _prepare_editorial_brief(self, news_items: List[Dict], goal: str, style: str) -> Dict[str, Any]:
+    async def _prepare_editorial_brief(
+        self,
+        news_items: List[Dict],
+        goal: str,
+        style: str,
+        route_content_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         prompt = f"""请你扮演财经内容总编，先不要直接写正文，而是基于以下新闻生成一份“编辑部策划 brief”。
 
 【生成目标】
@@ -362,7 +441,15 @@ class ContentGenerator:
 }}
 """
         try:
-            content = await self._call_ai(prompt, max_tokens=1800, system_prompt=self._system_prompt())
+            response_format = {"type": "json_object"} if self.provider != "anthropic" else None
+            content = await self._call_ai(
+                prompt,
+                max_tokens=1200,
+                system_prompt=self._system_prompt(),
+                temperature=0.2,
+                response_format=response_format,
+                content_type=route_content_type,
+            )
             return self._extract_json(content)
         except Exception as e:
             logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
@@ -460,8 +547,8 @@ class ContentGenerator:
 6. 可以加入[互动]、[留人钩子]、[揭晓悬念]、[情绪提示：...]等标记，但不要滥用。
 
 【硬性指标】
-- 总字数不少于1800字
-- 至少出现5个具体数字
+- 总字数控制在1500-2200字
+- 至少出现4个具体数字
 - 禁止空话：建议关注、可能有影响、需要观察、存在不确定性、仅供参考
 
 请直接输出完整直播稿，不要写解释：
@@ -472,13 +559,16 @@ class ContentGenerator:
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
+            route_content_type="stream_script",
         )
         prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
             response = await self._call_ai(
                 prompt,
-                max_tokens=5000,
+                max_tokens=3200,
                 system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
+                temperature=0.65,
+                content_type="stream_script",
             )
             return self._format_stream_script(response, news_items, duration)
         except Exception as e:
@@ -490,13 +580,15 @@ class ContentGenerator:
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
+            route_content_type="stream_script",
         )
         prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
             async for chunk in self._stream_ai(
                 prompt,
-                max_tokens=5000,
+                max_tokens=3200,
                 system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
+                content_type="stream_script",
             ):
                 if chunk:
                     yield chunk
@@ -511,6 +603,7 @@ class ContentGenerator:
             news_items,
             goal="写一篇能发在公众号上的高质量财经文章，不止要讲发生了什么，更要讲为什么重要",
             style="洞察" if title else "解读型",
+            route_content_type="article",
         )
         preferred_title = f"\n【标题方向偏好】\n{title}\n" if title else ""
         focus_hint = f"\n【重点聚焦】\n{focus_topic}\n" if focus_topic else ""
@@ -565,8 +658,8 @@ class ContentGenerator:
 7. 可以有锋利判断，但必须能自圆其说；不要只写成新闻扩写或摘要拼盘。
 
 【篇幅】
-- 总字数不少于1800字
-- 至少6个具体数字
+- 总字数控制在1400-2200字
+- 至少4个具体数字
 - 至少1处历史类比
 - 至少1个反主流判断
 
@@ -583,7 +676,13 @@ class ContentGenerator:
 ===
 """
         try:
-            response = await self._call_ai(prompt, max_tokens=5000, system_prompt=ARTICLE_SYSTEM_PROMPT)
+            response = await self._call_ai(
+                prompt,
+                max_tokens=3200,
+                system_prompt=ARTICLE_SYSTEM_PROMPT,
+                temperature=0.6,
+                content_type="article",
+            )
             return self._format_article(response)
         except Exception as e:
             logger.error("Article generation error: %s | %s", e, self._error_context())
@@ -1040,39 +1139,128 @@ N+4. 记忆点与先行指标
         })
         return slides
 
-    async def _call_ai(self, prompt: str, max_tokens: int = 4000, system_prompt: Optional[str] = None) -> str:
+    async def _call_ai(
+        self,
+        prompt: str,
+        max_tokens: int = 4000,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.75,
+        response_format: Optional[Dict[str, str]] = None,
+        content_type: Optional[str] = None,
+    ) -> str:
+        sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
+        last_error: Optional[Exception] = None
+
+        if self._should_use_quality_router(content_type):
+            return await self._call_openrouter(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=sys_prompt,
+                temperature=temperature,
+                content_type=content_type,
+                response_format=response_format,
+            )
+
         if not self.api_key:
             raise RuntimeError(f"缺少 {self.provider} 的 API Key")
 
-        sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
+        for attempt in range(2):
+            try:
+                if self.provider == "anthropic":
+                    message = await self.client.messages.create(
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system=sys_prompt,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    return message.content[0].text
 
-        if self.provider == "anthropic":
-            message = await self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                temperature=0.75,
-                system=sys_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return message.content[0].text
+                request_kwargs: Dict[str, Any] = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if response_format:
+                    request_kwargs["response_format"] = response_format
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
+                response = await self.client.chat.completions.create(**request_kwargs)
+                content = response.choices[0].message.content
+                return content if content else ""
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1.2)
+                    continue
+                raise last_error
+
+        raise last_error if last_error else RuntimeError("unknown ai call error")
+
+    async def _call_openrouter(
+        self,
+        prompt: str,
+        max_tokens: int,
+        system_prompt: str,
+        temperature: float,
+        content_type: str,
+        response_format: Optional[Dict[str, str]] = None,
+    ) -> str:
+        models = self._quality_route_models(content_type)
+        if not models or self.openrouter_client is None:
+            raise RuntimeError("OpenRouter 质量路由未正确配置")
+
+        request_kwargs: Dict[str, Any] = {
+            "model": models[0],
+            "messages": [
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=max_tokens,
-            temperature=0.75,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "extra_body": {
+                "models": models,
+                "route": "fallback",
+            },
+        }
+        if response_format:
+            request_kwargs["response_format"] = response_format
+
+        response = await self.openrouter_client.chat.completions.create(**request_kwargs)
+        selected_model = getattr(response, "model", models[0])
+        logger.info(
+            "OpenRouter routed content_type=%s selected_model=%s candidate_models=%s",
+            content_type,
+            selected_model,
+            ",".join(models),
         )
         content = response.choices[0].message.content
         return content if content else ""
 
-    async def _stream_ai(self, prompt: str, max_tokens: int = 2000, system_prompt: Optional[str] = None) -> AsyncIterator[str]:
+    async def _stream_ai(
+        self,
+        prompt: str,
+        max_tokens: int = 2000,
+        system_prompt: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
+
+        if self._should_use_quality_router(content_type):
+            async for chunk in self._stream_openrouter(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=sys_prompt,
+                content_type=content_type,
+            ):
+                yield chunk
+            return
+
         if not self.api_key:
             raise RuntimeError(f"缺少 {self.provider} 的 API Key")
-
-        sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
 
         if self.provider == "anthropic":
             full_text = await self._call_ai(prompt, max_tokens=max_tokens, system_prompt=sys_prompt)
@@ -1096,6 +1284,48 @@ N+4. 记忆点与先行指标
                 delta = part.choices[0].delta.content or ""
             if delta:
                 yield delta
+
+    async def _stream_openrouter(
+        self,
+        prompt: str,
+        max_tokens: int,
+        system_prompt: str,
+        content_type: str,
+    ) -> AsyncIterator[str]:
+        models = self._quality_route_models(content_type)
+        if not models or self.openrouter_client is None:
+            raise RuntimeError("OpenRouter 质量路由未正确配置")
+
+        stream = await self.openrouter_client.chat.completions.create(
+            model=models[0],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.65,
+            stream=True,
+            extra_body={
+                "models": models,
+                "route": "fallback",
+            },
+        )
+        selected_model = models[0]
+        async for part in stream:
+            part_model = getattr(part, "model", None)
+            if part_model:
+                selected_model = part_model
+            delta = ""
+            if part.choices:
+                delta = part.choices[0].delta.content or ""
+            if delta:
+                yield delta
+        logger.info(
+            "OpenRouter streamed content_type=%s selected_model=%s candidate_models=%s",
+            content_type,
+            selected_model,
+            ",".join(models),
+        )
 
     def _chunk_text(self, text: str, chunk_size: int = 120) -> List[str]:
         return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
