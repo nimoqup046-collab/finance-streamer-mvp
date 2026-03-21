@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import re
+import time
 from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -279,6 +280,20 @@ class ContentGenerator:
 
     def cost_status(self) -> Dict[str, Any]:
         events = list(self.usage_events)
+        now = time.time()
+        recent_1h_events = [event for event in events if (now - float(event.get("timestamp_epoch") or 0.0)) <= 3600]
+        recent_24h_events = [event for event in events if (now - float(event.get("timestamp_epoch") or 0.0)) <= 86400]
+
+        return {
+            "window_size": len(events),
+            "pricing_source": "static_estimate_per_1k_tokens",
+            "totals": self._summarize_cost_events(events),
+            "recent_1h": self._summarize_cost_events(recent_1h_events),
+            "recent_24h": self._summarize_cost_events(recent_24h_events),
+            "recent_events": events[-20:],
+        }
+
+    def _summarize_cost_events(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
         totals = {
             "requests": len(events),
             "prompt_tokens": 0,
@@ -322,8 +337,6 @@ class ContentGenerator:
                 by_model[model]["estimated_usd"] += estimated
 
         return {
-            "window_size": len(events),
-            "pricing_source": "static_estimate_per_1k_tokens",
             "totals": {
                 **totals,
                 "estimated_usd": round(totals["estimated_usd"], 6),
@@ -342,7 +355,6 @@ class ContentGenerator:
                 }
                 for key, value in by_model.items()
             },
-            "recent_events": events[-20:],
         }
 
     def _quality_route_models(self, content_type: Optional[str]) -> List[str]:
@@ -412,6 +424,7 @@ class ContentGenerator:
         estimated = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
         self.usage_events.append({
             "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp_epoch": time.time(),
             "provider": provider,
             "model": model,
             "content_type": content_type or "unknown",

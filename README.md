@@ -277,6 +277,11 @@ GET /health
 GET /api/status/cost
 ```
 
+返回包含：
+- `totals`：当前内存窗口汇总
+- `recent_1h`：最近 1 小时汇总
+- `recent_24h`：最近 24 小时汇总
+
 ---
 
 ## 🧭 主线基底
