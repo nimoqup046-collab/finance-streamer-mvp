@@ -15,8 +15,9 @@
 | **📝 直播稿生成** | 基于“编辑部 brief + 主线判断”生成更适合口播的直播稿 |
 | **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文 |
 | **📄 深度长文** | 输出带框架、机会与风险并重的深度研判文章 |
-| **🚀 一键全部生成** | 三种格式**并行**生成，比逐个生成快 3 倍 |
-| **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看三种结果 |
+| **⚡ 快报速评** | 30秒读完的短内容速评，适合社媒直发和群内快读 |
+| **🚀 一键全部生成** | 四种格式**并行**生成，比逐个生成更省时 |
+| **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看四种结果 |
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
 | **📊 PPT 导出** | 根据选中新闻直接下载结构化汇报版 PPT |
 | **🌊 流式生成** | 直播稿和全部生成支持渐进式输出，等待过程可见 |
@@ -147,6 +148,19 @@ finance-streamer-mvp/
 6. 等待 AI 生成完成
 7. 通过标签页切换不同格式，复制、下载或导出 PPT
 
+### 内容质量开发验收
+
+- 固定样例集：`benchmarks/content_quality_cases.json`
+- 评分 rubric：`benchmarks/content_quality_rubric.json`
+- 本地 benchmark 脚本：`scripts/benchmark_content_quality.py`
+
+示例：
+
+```bash
+python3 scripts/benchmark_content_quality.py --dry-run
+python3 scripts/benchmark_content_quality.py --output /tmp/content-quality-report.md
+```
+
 ---
 
 ## 🔄 API 接口
@@ -166,7 +180,7 @@ GET /api/news/search?q=关键词
 POST /api/generate
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report
   "duration": 30,
   "style": "专业"
 }

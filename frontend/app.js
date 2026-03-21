@@ -101,6 +101,7 @@ createApp({
                 { key: 'article', label: '📱 公众号' },
                 { key: 'deep_dive', label: '📄 深度长文' },
                 { key: 'ppt_script', label: '🖥️ PPT脚本' },
+                { key: 'flash_report', label: '⚡ 快报速评' },
             ],
 
             // 内容矩阵 Tab 配置（核心壁垒 3）
@@ -148,6 +149,7 @@ createApp({
                 deep_dive: '📄 深度长文（原创研究版）',
                 ppt_script: '🖥️ PPT演讲脚本',
                 moments_copy: '📣 朋友圈预热文案（50字诱饵）',
+                flash_report: '⚡ 快报速评（30秒抓主线版）',
             };
             return titles[this.resultType] || '生成结果';
         },
@@ -775,6 +777,7 @@ createApp({
                 else if (tab === 'article') this.result = this.allResults.article;
                 else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
                 else if (tab === 'ppt_script') this.result = this.allResults.ppt_script;
+                else if (tab === 'flash_report') this.result = this.allResults.flash_report;
             }
         },
 
@@ -848,6 +851,7 @@ createApp({
                 deep_dive: `深度长文_${this.getDateTimeString()}.md`,
                 ppt_script: `PPT脚本_${this.getDateTimeString()}.md`,
                 moments_copy: `朋友圈预热_${this.getDateTimeString()}.txt`,
+                flash_report: `快报速评_${this.getDateTimeString()}.txt`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -870,6 +874,7 @@ createApp({
                 deep_dive: '深度长文',
                 ppt_script: 'PPT脚本',
                 moments_copy: '朋友圈预热',
+                flash_report: '快报速评',
             };
             const text = typeof content === 'string'
                 ? content

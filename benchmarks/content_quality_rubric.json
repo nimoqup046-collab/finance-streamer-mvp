@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "description": "内容质量回归 rubric：优先用于直播稿与公众号文章。",
+  "dimensions": [
+    {
+      "id": "conclusion_first",
+      "label": "先讲结论",
+      "question": "开头是否足够快地给出最重要判断，而不是先铺新闻背景？",
+      "pass_signal": "前3段内出现明确结论或主判断。"
+    },
+    {
+      "id": "single_mainline",
+      "label": "主线清晰",
+      "question": "内容是否把多条新闻串成同一条主线，而不是逐条罗列？",
+      "pass_signal": "能概括出一句统一主线，并贯穿全文。"
+    },
+    {
+      "id": "causal_chain",
+      "label": "因果链完整",
+      "question": "是否写清楚发生了什么、为什么是现在、影响谁、接下来怎么看？",
+      "pass_signal": "至少有一条完整的传导链，不停留在现象层。"
+    },
+    {
+      "id": "judgment_strength",
+      "label": "判断有力度",
+      "question": "是否有反直觉判断、预期差或明确立场，而不是空泛中性表述？",
+      "pass_signal": "至少出现一个可复述的明确判断。"
+    },
+    {
+      "id": "anti_fluff",
+      "label": "空话控制",
+      "question": "是否显著减少“建议关注”“需要观察”等正确废话？",
+      "pass_signal": "通篇没有明显模板化废话堆砌。"
+    },
+    {
+      "id": "memorability",
+      "label": "可传播性",
+      "question": "是否有可传播标题、金句、比喻或记忆点？",
+      "pass_signal": "至少有一处值得截图或转发的表达。"
+    },
+    {
+      "id": "actionability",
+      "label": "可执行性",
+      "question": "是否给出下一步验证指标或读者可执行的观察框架？",
+      "pass_signal": "结尾或正文中明确写出后续该盯什么。"
+    }
+  ],
+  "per_output_expectations": {
+    "stream_script": {
+      "target": "可直接拿去二次微调后上播",
+      "minimum_bar": [
+        "有留人开场",
+        "有主线",
+        "有判断",
+        "有明日验证指标"
+      ]
+    },
+    "article": {
+      "target": "具备公众号发文基础，不再像模板化新闻汇总",
+      "minimum_bar": [
+        "标题有观点差异",
+        "导语有钩子",
+        "正文有结构",
+        "结尾有判断或行动"
+      ]
+    }
+  }
+}
