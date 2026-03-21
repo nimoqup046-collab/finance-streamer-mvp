@@ -596,6 +596,15 @@ async def get_status():
         }
     }
 
+
+@app.get("/api/status/cost")
+async def get_cost_status():
+    """获取最近生成请求的成本估算状态（仅观测用途）"""
+    return {
+        "status": "ok",
+        "cost": generator.cost_status(),
+    }
+
 # 挂载前端静态文件
 frontend_path = Path(__file__).parent.parent / "frontend"
 if os.path.exists(frontend_path):
@@ -613,6 +622,7 @@ async def root():
             "news": "/api/news",
             "generate": "/api/generate",
             "status": "/api/status",
+            "cost_status": "/api/status/cost",
             "health": "/health"
         }
     }

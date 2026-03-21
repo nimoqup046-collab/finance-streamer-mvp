@@ -272,6 +272,11 @@ POST /api/generate/ppt
 GET /health
 ```
 
+### 成本状态（近窗口估算）
+```
+GET /api/status/cost
+```
+
 ---
 
 ## 🧭 主线基底

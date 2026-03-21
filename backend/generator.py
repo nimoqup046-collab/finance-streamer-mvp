@@ -4,12 +4,13 @@ AI内容生成模块 —— Claude Prompt 基底整合版
 支持多种AI提供商：智谱、豆包、Anthropic Claude、OpenAI
 核心壁垒：财经风控合规 Agent、主播人设/IP记忆库、一键内容矩阵
 """
+import ast
 import asyncio
 import io
 import json
 import logging
 import re
-import asyncio
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -199,6 +200,16 @@ FORBIDDEN_EMPTY_PHRASES = [
     "不排除",
 ]
 
+# 粗略成本估算（USD / 1K tokens），用于状态观测，不作为结算依据
+ESTIMATED_MODEL_PRICING_PER_1K = {
+    "anthropic/claude-sonnet-4.6": {"input": 0.003, "output": 0.015},
+    "anthropic/claude-4.6-sonnet-20260217": {"input": 0.003, "output": 0.015},
+    "google/gemini-3.1-pro-preview": {"input": 0.00125, "output": 0.005},
+    "openai/gpt-5.1": {"input": 0.005, "output": 0.015},
+    "doubao-1-5-pro-32k-250115": {"input": 0.001, "output": 0.002},
+    "glm-5": {"input": 0.0015, "output": 0.0025},
+}
+
 
 class ContentGenerator:
     """内容生成器"""
@@ -214,6 +225,7 @@ class ContentGenerator:
             "stream_script": OPENROUTER_STREAM_MODELS,
             "article": OPENROUTER_ARTICLE_MODELS,
         }
+        self.usage_events: deque = deque(maxlen=200)
         self.client = self._init_client()
         self.openrouter_client = self._init_openrouter_client()
 
@@ -265,6 +277,74 @@ class ContentGenerator:
             "routed_types": list(self.quality_routed_types) if self.openrouter_enabled else [],
         }
 
+    def cost_status(self) -> Dict[str, Any]:
+        events = list(self.usage_events)
+        totals = {
+            "requests": len(events),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "estimated_usd": 0.0,
+            "estimated_events": 0,
+        }
+        by_content_type: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "estimated_usd": 0.0}
+        )
+        by_model: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "estimated_usd": 0.0}
+        )
+
+        for event in events:
+            prompt_tokens = int(event.get("prompt_tokens") or 0)
+            completion_tokens = int(event.get("completion_tokens") or 0)
+            total_tokens = prompt_tokens + completion_tokens
+            estimated_usd = event.get("estimated_usd")
+            content_type = event.get("content_type", "unknown")
+            model = event.get("model", "unknown")
+
+            totals["prompt_tokens"] += prompt_tokens
+            totals["completion_tokens"] += completion_tokens
+            totals["total_tokens"] += total_tokens
+
+            by_content_type[content_type]["requests"] += 1
+            by_content_type[content_type]["prompt_tokens"] += prompt_tokens
+            by_content_type[content_type]["completion_tokens"] += completion_tokens
+
+            by_model[model]["requests"] += 1
+            by_model[model]["prompt_tokens"] += prompt_tokens
+            by_model[model]["completion_tokens"] += completion_tokens
+
+            if estimated_usd is not None:
+                estimated = float(estimated_usd)
+                totals["estimated_usd"] += estimated
+                totals["estimated_events"] += 1
+                by_content_type[content_type]["estimated_usd"] += estimated
+                by_model[model]["estimated_usd"] += estimated
+
+        return {
+            "window_size": len(events),
+            "pricing_source": "static_estimate_per_1k_tokens",
+            "totals": {
+                **totals,
+                "estimated_usd": round(totals["estimated_usd"], 6),
+            },
+            "by_content_type": {
+                key: {
+                    **value,
+                    "estimated_usd": round(value["estimated_usd"], 6),
+                }
+                for key, value in by_content_type.items()
+            },
+            "by_model": {
+                key: {
+                    **value,
+                    "estimated_usd": round(value["estimated_usd"], 6),
+                }
+                for key, value in by_model.items()
+            },
+            "recent_events": events[-20:],
+        }
+
     def _quality_route_models(self, content_type: Optional[str]) -> List[str]:
         if not content_type:
             return []
@@ -277,6 +357,70 @@ class ContentGenerator:
             and self.openrouter_client is not None
             and self._quality_route_models(content_type)
         )
+
+    def _extract_usage_tokens(self, usage: Any) -> Dict[str, int]:
+        if usage is None:
+            return {"prompt_tokens": 0, "completion_tokens": 0}
+
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+            completion_tokens = usage.get("completion_tokens", completion_tokens)
+
+        # Anthropic usage 字段
+        if prompt_tokens is None:
+            prompt_tokens = getattr(usage, "input_tokens", 0)
+        if completion_tokens is None:
+            completion_tokens = getattr(usage, "output_tokens", 0)
+
+        return {
+            "prompt_tokens": int(prompt_tokens or 0),
+            "completion_tokens": int(completion_tokens or 0),
+        }
+
+    def _resolve_model_pricing(self, model_name: str) -> Optional[Dict[str, float]]:
+        if not model_name:
+            return None
+        if model_name in ESTIMATED_MODEL_PRICING_PER_1K:
+            return ESTIMATED_MODEL_PRICING_PER_1K[model_name]
+        for key, pricing in ESTIMATED_MODEL_PRICING_PER_1K.items():
+            if model_name.startswith(key):
+                return pricing
+        return None
+
+    def _estimate_cost_usd(self, model_name: str, prompt_tokens: int, completion_tokens: int) -> Optional[float]:
+        pricing = self._resolve_model_pricing(model_name)
+        if not pricing:
+            return None
+        return (
+            (prompt_tokens / 1000.0) * pricing["input"]
+            + (completion_tokens / 1000.0) * pricing["output"]
+        )
+
+    def _record_usage_event(
+        self,
+        *,
+        provider: str,
+        model: str,
+        content_type: Optional[str],
+        prompt_tokens: int,
+        completion_tokens: int,
+        route: str,
+    ) -> None:
+        estimated = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
+        self.usage_events.append({
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "provider": provider,
+            "model": model,
+            "content_type": content_type or "unknown",
+            "route": route,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "estimated_usd": round(estimated, 8) if estimated is not None else None,
+        })
 
     def _error_context(self) -> str:
         return (
@@ -389,13 +533,113 @@ class ContentGenerator:
         text = (text or "").strip()
         if not text:
             raise ValueError("empty json text")
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if not match:
-                raise
-            return json.loads(match.group(0))
+
+        candidates: List[str] = [text]
+
+        for block in re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
+            candidate = (block or "").strip()
+            if candidate:
+                candidates.append(candidate)
+
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            candidates.append(match.group(0).strip())
+
+        seen = set()
+        normalized_candidates = []
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized_candidates.append(candidate)
+
+        parser_errors = []
+        for candidate in normalized_candidates:
+            for parser_name, parser in (
+                ("strict_json", self._parse_json_strict),
+                ("sanitized_json", self._parse_json_sanitized),
+                ("python_literal", self._parse_json_python_literal),
+            ):
+                try:
+                    parsed = parser(candidate)
+                    if isinstance(parsed, dict):
+                        if parser_name != "strict_json":
+                            logger.info("JSON parse repaired by %s parser", parser_name)
+                        return parsed
+                except Exception as parse_error:
+                    parser_errors.append(f"{parser_name}:{parse_error}")
+
+        raise ValueError("unable to parse json payload: " + " | ".join(parser_errors[:3]))
+
+    def _parse_json_strict(self, text: str) -> Dict[str, Any]:
+        return json.loads(text)
+
+    def _parse_json_sanitized(self, text: str) -> Dict[str, Any]:
+        cleaned = (text or "").strip()
+        cleaned = cleaned.replace("“", "\"").replace("”", "\"").replace("’", "'")
+        cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        cleaned = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)", r'\1"\2"\3', cleaned)
+        return json.loads(cleaned)
+
+    def _parse_json_python_literal(self, text: str) -> Dict[str, Any]:
+        cleaned = (text or "").strip()
+        cleaned = re.sub(r"\btrue\b", "True", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bfalse\b", "False", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bnull\b", "None", cleaned, flags=re.IGNORECASE)
+        parsed = ast.literal_eval(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("python literal is not dict")
+
+    def _normalize_text_list(self, value: Any, fallback: List[str], max_items: int = 4) -> List[str]:
+        if not isinstance(value, list):
+            return list(fallback)
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized[:max_items] if normalized else list(fallback)
+
+    def _normalize_editorial_brief(self, raw_brief: Dict[str, Any], news_items: List[Dict], goal: str) -> Dict[str, Any]:
+        fallback = self._fallback_editorial_brief(news_items, goal)
+        if not isinstance(raw_brief, dict):
+            return fallback
+
+        result = dict(fallback)
+        for key in ("goal", "thesis", "lead_angle", "opening_hook", "contrarian_take"):
+            value = raw_brief.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()
+
+        for key in ("core_conflicts", "causal_chain", "market_pulse", "verification_signals", "audience_takeaways", "article_angles"):
+            result[key] = self._normalize_text_list(raw_brief.get(key), fallback.get(key, []), max_items=4)
+
+        winners_losers = raw_brief.get("winners_losers")
+        if isinstance(winners_losers, dict):
+            result["winners_losers"] = {
+                "winners": self._normalize_text_list(
+                    winners_losers.get("winners"),
+                    fallback["winners_losers"]["winners"],
+                    max_items=4,
+                ),
+                "losers": self._normalize_text_list(
+                    winners_losers.get("losers"),
+                    fallback["winners_losers"]["losers"],
+                    max_items=4,
+                ),
+            }
+
+        slide_outline = raw_brief.get("slide_outline")
+        if isinstance(slide_outline, list):
+            normalized_slides = []
+            for slide in slide_outline[:10]:
+                if not isinstance(slide, dict):
+                    continue
+                headline = str(slide.get("headline", "")).strip()
+                bullets = self._normalize_text_list(slide.get("bullets"), [], max_items=4)
+                if headline and bullets:
+                    normalized_slides.append({"headline": headline, "bullets": bullets})
+            if normalized_slides:
+                result["slide_outline"] = normalized_slides
+
+        return result
 
     async def _prepare_editorial_brief(
         self,
@@ -450,7 +694,7 @@ class ContentGenerator:
                 response_format=response_format,
                 content_type=route_content_type,
             )
-            return self._extract_json(content)
+            return self._normalize_editorial_brief(self._extract_json(content), news_items, goal)
         except Exception as e:
             logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
             return self._fallback_editorial_brief(news_items, goal)
@@ -1174,6 +1418,15 @@ N+4. 记忆点与先行指标
                         system=sys_prompt,
                         messages=[{"role": "user", "content": prompt}],
                     )
+                    usage = self._extract_usage_tokens(getattr(message, "usage", None))
+                    self._record_usage_event(
+                        provider=self.provider,
+                        model=self.model,
+                        content_type=content_type,
+                        prompt_tokens=usage["prompt_tokens"],
+                        completion_tokens=usage["completion_tokens"],
+                        route="base",
+                    )
                     return message.content[0].text
 
                 request_kwargs: Dict[str, Any] = {
@@ -1189,6 +1442,15 @@ N+4. 记忆点与先行指标
                     request_kwargs["response_format"] = response_format
 
                 response = await self.client.chat.completions.create(**request_kwargs)
+                usage = self._extract_usage_tokens(getattr(response, "usage", None))
+                self._record_usage_event(
+                    provider=self.provider,
+                    model=self.model,
+                    content_type=content_type,
+                    prompt_tokens=usage["prompt_tokens"],
+                    completion_tokens=usage["completion_tokens"],
+                    route="base",
+                )
                 content = response.choices[0].message.content
                 return content if content else ""
             except Exception as exc:
@@ -1231,11 +1493,22 @@ N+4. 记忆点与先行指标
 
         response = await self.openrouter_client.chat.completions.create(**request_kwargs)
         selected_model = getattr(response, "model", models[0])
+        usage = self._extract_usage_tokens(getattr(response, "usage", None))
+        self._record_usage_event(
+            provider="openrouter",
+            model=selected_model,
+            content_type=content_type,
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            route="quality",
+        )
         logger.info(
-            "OpenRouter routed content_type=%s selected_model=%s candidate_models=%s",
+            "OpenRouter routed content_type=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
             content_type,
             selected_model,
             ",".join(models),
+            usage["prompt_tokens"],
+            usage["completion_tokens"],
         )
         content = response.choices[0].message.content
         return content if content else ""
@@ -1305,26 +1578,43 @@ N+4. 记忆点与先行指标
             max_tokens=max_tokens,
             temperature=0.65,
             stream=True,
+            stream_options={"include_usage": True},
             extra_body={
                 "models": models,
                 "route": "fallback",
             },
         )
         selected_model = models[0]
+        prompt_tokens = 0
+        completion_tokens = 0
         async for part in stream:
             part_model = getattr(part, "model", None)
             if part_model:
                 selected_model = part_model
+            usage = self._extract_usage_tokens(getattr(part, "usage", None))
+            if usage["prompt_tokens"] or usage["completion_tokens"]:
+                prompt_tokens = usage["prompt_tokens"]
+                completion_tokens = usage["completion_tokens"]
             delta = ""
             if part.choices:
                 delta = part.choices[0].delta.content or ""
             if delta:
                 yield delta
+        self._record_usage_event(
+            provider="openrouter",
+            model=selected_model,
+            content_type=content_type,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            route="quality_stream",
+        )
         logger.info(
-            "OpenRouter streamed content_type=%s selected_model=%s candidate_models=%s",
+            "OpenRouter streamed content_type=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
             content_type,
             selected_model,
             ",".join(models),
+            prompt_tokens,
+            completion_tokens,
         )
 
     def _chunk_text(self, text: str, chunk_size: int = 120) -> List[str]:
