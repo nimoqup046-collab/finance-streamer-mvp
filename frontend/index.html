@@ -32,6 +32,14 @@
                         <span class="header-quality-title">{{ qualityRoutingBanner.text }}</span>
                         <span class="header-quality-detail">{{ qualityRoutingBanner.detail }}</span>
                     </div>
+                    <div class="header-quality-tags">
+                        <span
+                            v-for="tag in qualityRoutingTags"
+                            :key="tag.key"
+                            class="header-quality-tag"
+                            :class="`tag-${tag.tone}`"
+                        >{{ tag.label }}：{{ tag.value }}</span>
+                    </div>
                 </div>
             </div>
         </header>

@@ -150,6 +150,41 @@ body {
     color: var(--text-light);
 }
 
+.header-quality-tags {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.header-quality-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid transparent;
+}
+
+.header-quality-tag.tag-success {
+    background: var(--success-light);
+    color: #166534;
+    border-color: #86efac;
+}
+
+.header-quality-tag.tag-warning {
+    background: var(--warning-light);
+    color: #92400e;
+    border-color: #fcd34d;
+}
+
+.header-quality-tag.tag-info {
+    background: var(--primary-light);
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+}
+
 .header-quality-bar.status-success .header-quality-content {
     background: var(--success-light);
     border: 1px solid #86efac;
@@ -1561,6 +1596,10 @@ body {
 
     .header-quality-title {
         white-space: normal;
+    }
+
+    .header-quality-tags {
+        margin-top: 6px;
     }
 }
 

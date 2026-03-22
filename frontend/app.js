@@ -238,6 +238,41 @@ createApp({
                 detail: '当前全部走基础模型链路',
             };
         },
+
+        qualityRoutingTags() {
+            if (!this.qualityRoutingState.loaded) {
+                return [
+                    { key: 'core', label: '直播/公众号', value: '读取中', tone: 'info' },
+                    { key: 'platform', label: '平台格式包', value: '读取中', tone: 'info' },
+                ];
+            }
+
+            if (this.qualityRoutingState.error) {
+                return [
+                    { key: 'core', label: '直播/公众号', value: '状态未知', tone: 'info' },
+                    { key: 'platform', label: '平台格式包', value: '状态未知', tone: 'info' },
+                ];
+            }
+
+            const routed = new Set(this.qualityRoutingState.routedTypes || []);
+            const coreEnabled = routed.has('stream_script') || routed.has('article');
+            const platformEnabled = routed.has('platform_pack');
+
+            return [
+                {
+                    key: 'core',
+                    label: '直播/公众号',
+                    value: coreEnabled ? 'OpenRouter' : '基础模型',
+                    tone: coreEnabled ? 'success' : 'warning',
+                },
+                {
+                    key: 'platform',
+                    label: '平台格式包',
+                    value: platformEnabled ? 'OpenRouter' : '基础模型（省钱）',
+                    tone: platformEnabled ? 'success' : 'warning',
+                },
+            ];
+        },
     },
 
     methods: {
