@@ -16,11 +16,13 @@
 | **📱 公众号文章** | 输出更强调洞察、结构与可读性的财经公众号长文，可选 OpenRouter 多模型质量路由 |
 | **📄 深度长文** | 输出带框架、机会与风险并重的深度研判文章 |
 | **⚡ 快报速评** | 30秒读完的短内容速评，适合社媒直发和群内快读 |
-| **🚀 一键全部生成** | 四种格式**并行**生成，比逐个生成更省时 |
-| **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看四种结果 |
+| **🚀 一键全部生成** | 六种格式**并行**生成（直播稿/公众号/深度长文/PPT脚本/快报速评/平台格式包） |
+| **📑 多结果标签页** | 一键全部生成后，通过标签页切换查看多种结果 |
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
 | **📊 PPT 导出** | 根据选中新闻直接下载结构化汇报版 PPT |
 | **🌊 流式生成** | 直播稿和全部生成支持渐进式输出，等待过程可见 |
+| **🔍 投资信号提取** | 对选中新闻生成结构化“投资信号速览”（主线/风险/验证清单） |
+| **📦 平台格式包** | 一键输出抖音口播、小红书图文、微博热评、朋友圈文案 |
 
 ---
 
@@ -172,6 +174,7 @@ finance-streamer-mvp/
 5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
 6. 等待 AI 生成完成
 7. 通过标签页切换不同格式，复制、下载或导出 PPT
+8. 可在新闻区点击“提取投资信号”先看结构化判断，再决定要生成哪类内容
 
 ### OpenRouter 质量路由
 
@@ -229,12 +232,21 @@ GET /api/news?refresh=true
 GET /api/news/search?q=关键词
 ```
 
+### 提取投资信号
+```
+POST /api/news/score
+{
+  "news_ids": ["id1", "id2"],
+  "focus_topic": "可选，聚焦主题"
+}
+```
+
 ### 生成内容
 ```
 POST /api/generate
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report | platform_pack
   "duration": 30,
   "style": "专业"
 }
@@ -253,7 +265,7 @@ POST /api/generate/all
 POST /api/generate/stream
 {
   "news_ids": ["id1", "id2"],
-  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | all
+  "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report | all
   "duration": 30,
   "style": "专业"
 }
