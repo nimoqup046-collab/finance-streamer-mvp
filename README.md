@@ -21,6 +21,7 @@
 | **⚙️ 设置面板** | 调节直播时长、写作风格、API Key，配置自动持久化 |
 | **📊 PPT 导出** | 根据选中新闻直接下载结构化汇报版 PPT |
 | **🌊 流式生成** | 直播稿和全部生成支持渐进式输出，等待过程可见 |
+| **🎛️ 请求级档位切换** | 前端可一键切换“跟随后端 / 省钱 / 高质量”，仅作用于直播稿与公众号 |
 | **🔍 投资信号提取** | 对选中新闻生成结构化“投资信号速览”（主线/风险/验证清单） |
 | **📦 平台格式包** | 一键输出抖音口播、小红书图文、微博热评、朋友圈文案 |
 
@@ -174,10 +175,11 @@ finance-streamer-mvp/
 2. 使用“热点优先 / 最新优先”、搜索框或分类标签筛选感兴趣的新闻
 3. 勾选需要播报的新闻
 4. 在右侧调整直播时长和写作风格
-5. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
-6. 等待 AI 生成完成
-7. 通过标签页切换不同格式，复制、下载或导出 PPT
-8. 可在新闻区点击“提取投资信号”先看结构化判断，再决定要生成哪类内容
+5. 在顶部“请求档位”选择：`跟随后端 / 省钱 / 高质量`（会自动记忆本机选择）
+6. 点击生成按钮（直播稿/公众号/深度长文/全部生成）
+7. 等待 AI 生成完成
+8. 通过标签页切换不同格式，复制、下载或导出 PPT
+9. 可在新闻区点击“提取投资信号”先看结构化判断，再决定要生成哪类内容
 
 ### OpenRouter 质量路由
 
@@ -207,6 +209,14 @@ finance-streamer-mvp/
 # 只改变量，不立即部署
 ./scripts/switch_openrouter_profile.sh cheap --no-deploy
 ```
+
+### 请求级档位切换（前端一键）
+
+- 页面顶部提供三档：`跟随后端`、`省钱`、`高质量`。
+- 仅影响 `stream_script` 与 `article` 两类生成请求。
+- `跟随后端`：不传 `quality_profile`，完全使用服务端默认路由。
+- `省钱 / 高质量`：前端会在请求体中透传 `quality_profile=cheap|quality`。
+- 优先级说明：预算护栏高于请求档位。即使用户选择“高质量”，若超预算也会自动降级到基础 provider，并在状态与日志可见。
 
 ### 内容质量开发验收
 
@@ -251,14 +261,21 @@ POST /api/generate
   "news_ids": ["id1", "id2"],
   "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report | platform_pack
   "duration": 30,
-  "style": "专业"
+  "style": "专业",
+  "quality_profile": "quality"      // 可选：cheap | quality；仅对 stream_script/article 生效
 }
 ```
 
-### 一键全部生成（并行，返回 4 类结果）
+### 一键全部生成（并行，返回 6 类结果）
 ```
 POST /api/generate/all
 ["id1", "id2"]
+
+// 新增兼容对象体（推荐在前端显式档位时使用）
+{
+  "news_ids": ["id1", "id2"],
+  "quality_profile": "cheap"        // 可选：cheap | quality
+}
 
 // 返回: stream_script / article / deep_dive / ppt_script / flash_report / platform_pack
 ```
@@ -270,7 +287,8 @@ POST /api/generate/stream
   "news_ids": ["id1", "id2"],
   "content_type": "stream_script",  // stream_script | article | deep_dive | ppt_script | flash_report | all
   "duration": 30,
-  "style": "专业"
+  "style": "专业",
+  "quality_profile": "quality"      // 可选：cheap | quality；仅对 stream_script/article 生效
 }
 ```
 
@@ -293,6 +311,16 @@ POST /api/generate/ppt
 ```
 GET /health
 ```
+
+### 质量路由状态
+```
+GET /api/status
+```
+
+返回中包含：
+- `quality_routing`：后端是否启用质量路由
+- `quality_router_provider`：质量路由提供商（如 `openrouter`）
+- `quality_routed_types`：当前后端允许走质量路由的内容类型
 
 ### 成本状态（近窗口估算）
 ```

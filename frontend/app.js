@@ -13,7 +13,13 @@ function loadSettings() {
         const saved = localStorage.getItem('finance_streamer_settings');
         if (saved) return JSON.parse(saved);
     } catch (_) {}
-    return { duration: 30, style: '洞察', apiKey: '', persona: { invest_style: '', catchphrases: '', ip_desc: '' } };
+    return {
+        duration: 30,
+        style: '洞察',
+        apiKey: '',
+        qualityProfileMode: 'inherit',
+        persona: { invest_style: '', catchphrases: '', ip_desc: '' },
+    };
 }
 
 const PROGRESS_STEPS = [
@@ -46,6 +52,7 @@ createApp({
             duration: settings.duration || 30,
             style: settings.style || '洞察',
             apiKey: settings.apiKey || '',
+            qualityProfileMode: settings.qualityProfileMode || 'inherit',
             showSettings: false,
             styleOptions: ['洞察', '解读型', '专业', '轻松'],
             durationOptions: [15, 30, 60],
@@ -240,8 +247,16 @@ createApp({
         },
 
         qualityRoutingTags() {
+            const profileMap = {
+                inherit: { value: '跟随后端', tone: 'info' },
+                cheap: { value: '省钱', tone: 'warning' },
+                quality: { value: '高质量', tone: 'success' },
+            };
+            const currentProfile = profileMap[this.qualityProfileMode] || profileMap.inherit;
+
             if (!this.qualityRoutingState.loaded) {
                 return [
+                    { key: 'requested', label: '当前请求档位', value: currentProfile.value, tone: currentProfile.tone },
                     { key: 'core', label: '直播/公众号', value: '读取中', tone: 'info' },
                     { key: 'platform', label: '平台格式包', value: '读取中', tone: 'info' },
                 ];
@@ -249,6 +264,7 @@ createApp({
 
             if (this.qualityRoutingState.error) {
                 return [
+                    { key: 'requested', label: '当前请求档位', value: currentProfile.value, tone: currentProfile.tone },
                     { key: 'core', label: '直播/公众号', value: '状态未知', tone: 'info' },
                     { key: 'platform', label: '平台格式包', value: '状态未知', tone: 'info' },
                 ];
@@ -259,6 +275,12 @@ createApp({
             const platformEnabled = routed.has('platform_pack');
 
             return [
+                {
+                    key: 'requested',
+                    label: '当前请求档位',
+                    value: currentProfile.value,
+                    tone: currentProfile.tone,
+                },
                 {
                     key: 'core',
                     label: '直播/公众号',
@@ -276,10 +298,43 @@ createApp({
     },
 
     methods: {
+        persistSettings() {
+            localStorage.setItem('finance_streamer_settings', JSON.stringify({
+                duration: this.duration,
+                style: this.style,
+                apiKey: this.apiKey,
+                qualityProfileMode: this.qualityProfileMode,
+                persona: this.persona,
+            }));
+        },
+
         formatUsd(value) {
             const num = Number(value || 0);
             if (!Number.isFinite(num)) return '0.000';
             return num.toFixed(3);
+        },
+
+        setQualityProfileMode(mode) {
+            const normalized = ['inherit', 'cheap', 'quality'].includes(mode) ? mode : 'inherit';
+            this.qualityProfileMode = normalized;
+            try {
+                this.persistSettings();
+            } catch (_) {}
+        },
+
+        getRequestedQualityProfile() {
+            if (this.qualityProfileMode === 'cheap' || this.qualityProfileMode === 'quality') {
+                return this.qualityProfileMode;
+            }
+            return null;
+        },
+
+        withQualityProfile(payload) {
+            const profile = this.getRequestedQualityProfile();
+            if (profile) {
+                return { ...payload, quality_profile: profile };
+            }
+            return payload;
         },
 
         getContentTypeLabel(type) {
@@ -413,12 +468,7 @@ createApp({
 
         saveSettings() {
             try {
-                localStorage.setItem('finance_streamer_settings', JSON.stringify({
-                    duration: this.duration,
-                    style: this.style,
-                    apiKey: this.apiKey,
-                    persona: this.persona,
-                }));
+                this.persistSettings();
                 this.showToastMessage('设置已保存', 'success');
             } catch (error) {
                 console.error('保存设置失败:', error);
@@ -626,16 +676,17 @@ createApp({
         },
 
         async generateContentFallback(type) {
+            const payload = this.withQualityProfile({
+                news_ids: this.selectedNews,
+                content_type: type,
+                duration: this.duration,
+                style: this.style,
+                persona: this.buildPersona(),
+            });
             const response = await fetch(`${API_BASE}/api/generate`, {
                 method: 'POST',
                 headers: this.buildHeaders(),
-                body: JSON.stringify({
-                    news_ids: this.selectedNews,
-                    content_type: type,
-                    duration: this.duration,
-                    style: this.style,
-                    persona: this.buildPersona(),
-                }),
+                body: JSON.stringify(payload),
             });
 
             if (!response.ok) {
@@ -653,10 +704,14 @@ createApp({
         },
 
         async generateAllFallback() {
+            const requestedProfile = this.getRequestedQualityProfile();
+            const bodyPayload = requestedProfile
+                ? { news_ids: this.selectedNews, quality_profile: requestedProfile }
+                : this.selectedNews;
             const response = await fetch(`${API_BASE}/api/generate/all`, {
                 method: 'POST',
                 headers: this.buildHeaders(),
-                body: JSON.stringify(this.selectedNews),
+                body: JSON.stringify(bodyPayload),
             });
 
             if (!response.ok) {
@@ -698,13 +753,13 @@ createApp({
             try {
                 if (type === 'stream_script') {
                     await this.streamGenerate(
-                        {
+                        this.withQualityProfile({
                             news_ids: this.selectedNews,
                             content_type: type,
                             duration: this.duration,
                             style: this.style,
                             persona: this.buildPersona(),
-                        },
+                        }),
                         {
                             status: (event) => {
                                 if (typeof event.step === 'number') {
@@ -766,13 +821,13 @@ createApp({
 
             try {
                 await this.streamGenerate(
-                    {
+                    this.withQualityProfile({
                         news_ids: this.selectedNews,
                         content_type: 'all',
                         duration: this.duration,
                         style: this.style,
                         persona: this.buildPersona(),
-                    },
+                    }),
                     {
                         status: (event) => {
                             if (typeof event.step === 'number') {

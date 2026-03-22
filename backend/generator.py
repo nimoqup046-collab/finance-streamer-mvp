@@ -13,7 +13,7 @@ import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from backend.config import (
     AI_PROVIDER,
@@ -218,6 +218,8 @@ FORBIDDEN_EMPTY_PHRASES = [
     "不排除",
 ]
 
+QUALITY_PROFILE_TARGET_TYPES = {"stream_script", "article"}
+
 # 粗略成本估算（USD / 1K tokens），用于状态观测，不作为结算依据
 ESTIMATED_MODEL_PRICING_PER_1K = {
     "anthropic/claude-sonnet-4.6": {"input": 0.003, "output": 0.015},
@@ -394,16 +396,25 @@ class ContentGenerator:
             return []
         return list(self.openrouter_models.get(content_type, []))
 
-    def _should_use_quality_router(self, content_type: Optional[str]) -> bool:
-        can_route = bool(
+    def _normalize_quality_profile(self, quality_profile: Optional[str], content_type: Optional[str]) -> Optional[str]:
+        if content_type not in QUALITY_PROFILE_TARGET_TYPES:
+            return None
+        if not quality_profile:
+            return None
+        normalized = str(quality_profile).strip().lower()
+        if normalized in {"cheap", "quality"}:
+            return normalized
+        return None
+
+    def _quality_route_available(self, content_type: Optional[str]) -> bool:
+        return bool(
             self.openrouter_enabled
             and content_type in self.quality_routed_types
             and self.openrouter_client is not None
             and self._quality_route_models(content_type)
         )
-        if not can_route:
-            return False
 
+    def _quality_budget_allows_route(self) -> bool:
         budget = self._quality_budget_status()
         if budget["exceeded"]:
             if not self._quality_budget_exceeded_logged:
@@ -421,6 +432,35 @@ class ContentGenerator:
             self._quality_budget_exceeded_logged = False
 
         return True
+
+    def _resolve_quality_route(
+        self,
+        content_type: Optional[str],
+        quality_profile: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], str]:
+        requested_profile = self._normalize_quality_profile(quality_profile, content_type)
+        route_available = self._quality_route_available(content_type)
+
+        if requested_profile == "cheap":
+            return False, requested_profile, "forced_base_by_profile"
+
+        if requested_profile == "quality":
+            if not route_available:
+                return False, requested_profile, "quality_route_unavailable"
+            if not self._quality_budget_allows_route():
+                return False, requested_profile, "quality_budget_fallback"
+            return True, requested_profile, "forced_quality_by_profile"
+
+        if route_available:
+            if self._quality_budget_allows_route():
+                return True, requested_profile, "default_quality_route"
+            return False, requested_profile, "default_quality_budget_fallback"
+
+        return False, requested_profile, "default_base_route"
+
+    def _should_use_quality_router(self, content_type: Optional[str], quality_profile: Optional[str] = None) -> bool:
+        should_route, _, _ = self._resolve_quality_route(content_type, quality_profile=quality_profile)
+        return should_route
 
     def _quality_budget_status(self) -> Dict[str, Any]:
         recent_1h_usd = self._recent_estimated_usd(3600)
@@ -882,6 +922,7 @@ class ContentGenerator:
         goal: str,
         style: str,
         route_content_type: Optional[str] = None,
+        quality_profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         prompt = f"""请你扮演财经内容总编，先不要直接写正文，而是基于以下新闻生成一份“编辑部策划 brief”。
 
@@ -928,6 +969,7 @@ class ContentGenerator:
                 temperature=0.1,
                 response_format=response_format,
                 content_type=route_content_type,
+                quality_profile=quality_profile,
             )
             try:
                 parsed = self._extract_json(content)
@@ -935,6 +977,7 @@ class ContentGenerator:
                 repaired_content = await self._repair_json_payload(
                     content,
                     route_content_type=route_content_type,
+                    quality_profile=quality_profile,
                 )
                 if repaired_content:
                     logger.info("Editorial brief parse repaired via json_fixer")
@@ -946,7 +989,12 @@ class ContentGenerator:
             logger.warning("Editorial brief fallback triggered: %s | %s", e, self._error_context())
             return self._fallback_editorial_brief(news_items, goal)
 
-    async def _repair_json_payload(self, raw_text: str, route_content_type: Optional[str]) -> Optional[str]:
+    async def _repair_json_payload(
+        self,
+        raw_text: str,
+        route_content_type: Optional[str],
+        quality_profile: Optional[str] = None,
+    ) -> Optional[str]:
         if not raw_text:
             return None
 
@@ -969,6 +1017,7 @@ class ContentGenerator:
                 temperature=0.0,
                 response_format=response_format,
                 content_type=route_content_type,
+                quality_profile=quality_profile,
             )
         except Exception:
             return None
@@ -1129,12 +1178,20 @@ class ContentGenerator:
 请直接输出完整直播稿，不要写解释：
 """
 
-    async def generate_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业", persona: Optional[Dict] = None) -> str:
+    async def generate_stream_script(
+        self,
+        news_items: List[Dict],
+        duration: int = 30,
+        style: str = "专业",
+        persona: Optional[Dict] = None,
+        quality_profile: Optional[str] = None,
+    ) -> str:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
             route_content_type="stream_script",
+            quality_profile=quality_profile,
         )
         prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
@@ -1144,18 +1201,27 @@ class ContentGenerator:
                 system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
                 temperature=0.65,
                 content_type="stream_script",
+                quality_profile=quality_profile,
             )
             return self._format_stream_script(response, news_items, duration)
         except Exception as e:
             logger.error("Generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_script(news_items)
 
-    async def stream_stream_script(self, news_items: List[Dict], duration: int = 30, style: str = "专业", persona: Optional[Dict] = None) -> AsyncIterator[str]:
+    async def stream_stream_script(
+        self,
+        news_items: List[Dict],
+        duration: int = 30,
+        style: str = "专业",
+        persona: Optional[Dict] = None,
+        quality_profile: Optional[str] = None,
+    ) -> AsyncIterator[str]:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="输出一份适合直播口播、判断明确、能帮观众抓主线的财经直播稿",
             style=style,
             route_content_type="stream_script",
+            quality_profile=quality_profile,
         )
         prompt = self._build_stream_script_prompt(news_items, editorial_brief, duration=duration, style=style, persona=persona)
         try:
@@ -1164,6 +1230,7 @@ class ContentGenerator:
                 max_tokens=3200,
                 system_prompt=STREAM_SCRIPT_SYSTEM_PROMPT,
                 content_type="stream_script",
+                quality_profile=quality_profile,
             ):
                 if chunk:
                     yield chunk
@@ -1173,12 +1240,20 @@ class ContentGenerator:
             for chunk in self._chunk_text(fallback, chunk_size=160):
                 yield chunk
 
-    async def generate_article(self, news_items: List[Dict], title: str = "", focus_topic: str = "", persona: Optional[Dict] = None) -> Dict:
+    async def generate_article(
+        self,
+        news_items: List[Dict],
+        title: str = "",
+        focus_topic: str = "",
+        persona: Optional[Dict] = None,
+        quality_profile: Optional[str] = None,
+    ) -> Dict:
         editorial_brief = await self._prepare_editorial_brief(
             news_items,
             goal="写一篇能发在公众号上的高质量财经文章，不止要讲发生了什么，更要讲为什么重要",
             style="洞察" if title else "解读型",
             route_content_type="article",
+            quality_profile=quality_profile,
         )
         preferred_title = f"\n【标题方向偏好】\n{title}\n" if title else ""
         focus_hint = f"\n【重点聚焦】\n{focus_topic}\n" if focus_topic else ""
@@ -1257,6 +1332,7 @@ class ContentGenerator:
                 system_prompt=ARTICLE_SYSTEM_PROMPT,
                 temperature=0.6,
                 content_type="article",
+                quality_profile=quality_profile,
             )
             return self._format_article(response)
         except Exception as e:
@@ -1807,11 +1883,25 @@ N+4. 记忆点与先行指标
         temperature: float = 0.75,
         response_format: Optional[Dict[str, str]] = None,
         content_type: Optional[str] = None,
+        quality_profile: Optional[str] = None,
     ) -> str:
         sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
         last_error: Optional[Exception] = None
 
-        if self._should_use_quality_router(content_type):
+        should_quality_route, requested_profile, route_reason = self._resolve_quality_route(
+            content_type,
+            quality_profile=quality_profile,
+        )
+        effective_route = "quality" if should_quality_route else "base"
+        logger.info(
+            "AI route decision content_type=%s requested_profile=%s effective_route=%s reason=%s",
+            content_type,
+            requested_profile or "inherit",
+            effective_route,
+            route_reason,
+        )
+
+        if should_quality_route:
             return await self._call_openrouter(
                 prompt,
                 max_tokens=max_tokens,
@@ -1819,6 +1909,8 @@ N+4. 记忆点与先行指标
                 temperature=temperature,
                 content_type=content_type,
                 response_format=response_format,
+                requested_profile=requested_profile,
+                route_reason=route_reason,
             )
 
         if not self.api_key:
@@ -1841,7 +1933,7 @@ N+4. 记忆点与先行指标
                         content_type=content_type,
                         prompt_tokens=usage["prompt_tokens"],
                         completion_tokens=usage["completion_tokens"],
-                        route="base",
+                        route=f"base:{route_reason}",
                     )
                     return message.content[0].text
 
@@ -1865,7 +1957,7 @@ N+4. 记忆点与先行指标
                     content_type=content_type,
                     prompt_tokens=usage["prompt_tokens"],
                     completion_tokens=usage["completion_tokens"],
-                    route="base",
+                    route=f"base:{route_reason}",
                 )
                 content = response.choices[0].message.content
                 return content if content else ""
@@ -1886,6 +1978,8 @@ N+4. 记忆点与先行指标
         temperature: float,
         content_type: str,
         response_format: Optional[Dict[str, str]] = None,
+        requested_profile: Optional[str] = None,
+        route_reason: str = "",
     ) -> str:
         models = self._quality_route_models(content_type)
         if not models or self.openrouter_client is None:
@@ -1916,11 +2010,13 @@ N+4. 记忆点与先行指标
             content_type=content_type,
             prompt_tokens=usage["prompt_tokens"],
             completion_tokens=usage["completion_tokens"],
-            route="quality",
+            route=f"quality:{route_reason or 'default'}",
         )
         logger.info(
-            "OpenRouter routed content_type=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
+            "OpenRouter routed content_type=%s requested_profile=%s effective_route=quality reason=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
             content_type,
+            requested_profile or "inherit",
+            route_reason or "default",
             selected_model,
             ",".join(models),
             usage["prompt_tokens"],
@@ -1935,15 +2031,31 @@ N+4. 记忆点与先行指标
         max_tokens: int = 2000,
         system_prompt: Optional[str] = None,
         content_type: Optional[str] = None,
+        quality_profile: Optional[str] = None,
     ) -> AsyncIterator[str]:
         sys_prompt = system_prompt or MASTER_SYSTEM_PROMPT
 
-        if self._should_use_quality_router(content_type):
+        should_quality_route, requested_profile, route_reason = self._resolve_quality_route(
+            content_type,
+            quality_profile=quality_profile,
+        )
+        effective_route = "quality" if should_quality_route else "base"
+        logger.info(
+            "AI stream route decision content_type=%s requested_profile=%s effective_route=%s reason=%s",
+            content_type,
+            requested_profile or "inherit",
+            effective_route,
+            route_reason,
+        )
+
+        if should_quality_route:
             async for chunk in self._stream_openrouter(
                 prompt,
                 max_tokens=max_tokens,
                 system_prompt=sys_prompt,
                 content_type=content_type,
+                requested_profile=requested_profile,
+                route_reason=route_reason,
             ):
                 yield chunk
             return
@@ -1952,7 +2064,13 @@ N+4. 记忆点与先行指标
             raise RuntimeError(f"缺少 {self.provider} 的 API Key")
 
         if self.provider == "anthropic":
-            full_text = await self._call_ai(prompt, max_tokens=max_tokens, system_prompt=sys_prompt)
+            full_text = await self._call_ai(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=sys_prompt,
+                content_type=content_type,
+                quality_profile=quality_profile,
+            )
             for chunk in self._chunk_text(full_text):
                 yield chunk
             return
@@ -1980,6 +2098,8 @@ N+4. 记忆点与先行指标
         max_tokens: int,
         system_prompt: str,
         content_type: str,
+        requested_profile: Optional[str] = None,
+        route_reason: str = "",
     ) -> AsyncIterator[str]:
         models = self._quality_route_models(content_type)
         if not models or self.openrouter_client is None:
@@ -2022,11 +2142,13 @@ N+4. 记忆点与先行指标
             content_type=content_type,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            route="quality_stream",
+            route=f"quality_stream:{route_reason or 'default'}",
         )
         logger.info(
-            "OpenRouter streamed content_type=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
+            "OpenRouter streamed content_type=%s requested_profile=%s effective_route=quality reason=%s selected_model=%s candidate_models=%s prompt_tokens=%s completion_tokens=%s",
             content_type,
+            requested_profile or "inherit",
+            route_reason or "default",
             selected_model,
             ",".join(models),
             prompt_tokens,

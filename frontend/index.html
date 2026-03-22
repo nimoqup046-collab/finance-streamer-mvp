@@ -32,6 +32,21 @@
                         <span class="header-quality-title">{{ qualityRoutingBanner.text }}</span>
                         <span class="header-quality-detail">{{ qualityRoutingBanner.detail }}</span>
                     </div>
+                    <div class="quality-profile-switch">
+                        <span class="quality-profile-label">请求档位</span>
+                        <button
+                            @click="setQualityProfileMode('inherit')"
+                            :class="['quality-profile-btn', { active: qualityProfileMode === 'inherit' }]"
+                        >跟随后端</button>
+                        <button
+                            @click="setQualityProfileMode('cheap')"
+                            :class="['quality-profile-btn', { active: qualityProfileMode === 'cheap' }]"
+                        >省钱</button>
+                        <button
+                            @click="setQualityProfileMode('quality')"
+                            :class="['quality-profile-btn', { active: qualityProfileMode === 'quality' }]"
+                        >高质量</button>
+                    </div>
                     <div class="header-quality-tags">
                         <span
                             v-for="tag in qualityRoutingTags"

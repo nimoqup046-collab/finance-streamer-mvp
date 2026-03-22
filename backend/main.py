@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 from datetime import datetime
 
 from backend.config import (
@@ -73,6 +73,7 @@ class GenerateRequest(BaseModel):
     style: Optional[str] = "专业"
     title: Optional[str] = ""
     focus_topic: Optional[str] = ""
+    quality_profile: Optional[str] = None  # cheap | quality（仅作用于 stream_script/article）
     persona: Optional[PersonaConfig] = None  # 主播人设/IP记忆库
 
 class ComplianceRequest(BaseModel):
@@ -90,6 +91,11 @@ class MatrixRequest(BaseModel):
 class NewsScoreRequest(BaseModel):
     news_ids: List[str]
     focus_topic: Optional[str] = ""
+
+
+class GenerateAllRequest(BaseModel):
+    news_ids: List[str]
+    quality_profile: Optional[str] = None  # cheap | quality
 
 class NewsItem(BaseModel):
     id: str
@@ -164,6 +170,15 @@ async def _resolve_selected_news(news_ids: List[str]) -> List[dict]:
 
 def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _normalize_quality_profile(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"cheap", "quality"}:
+        return normalized
+    return None
 
 
 async def refresh_news_cache(force: bool = False) -> List[dict]:
@@ -313,6 +328,13 @@ async def generate_content(request: GenerateRequest):
     """生成指定类型的内容。"""
     selected_news = await _resolve_selected_news(request.news_ids)
     requested_type = "ppt_script" if request.content_type == "ppt" else request.content_type
+    quality_profile = _normalize_quality_profile(request.quality_profile)
+    logger.info(
+        "Generate request content_type=%s requested_profile=%s news_count=%s",
+        requested_type,
+        quality_profile or "inherit",
+        len(selected_news),
+    )
 
     try:
         if requested_type == "stream_script":
@@ -321,6 +343,7 @@ async def generate_content(request: GenerateRequest):
                 duration=request.duration or 30,
                 style=request.style or "专业",
                 persona=request.persona.model_dump() if request.persona else None,
+                quality_profile=quality_profile,
             )
             return {
                 "type": "stream_script",
@@ -335,6 +358,7 @@ async def generate_content(request: GenerateRequest):
                 title=request.title or "",
                 focus_topic=request.focus_topic or "",
                 persona=request.persona.model_dump() if request.persona else None,
+                quality_profile=quality_profile,
             )
             return {
                 "type": "article",
@@ -402,14 +426,29 @@ async def generate_content(request: GenerateRequest):
 
 # 批量生成（一键生成全部）
 @app.post("/api/generate/all", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
-async def generate_all(news_ids: List[str] = Body(...)):
+async def generate_all(payload: Any = Body(...)):
     """一键生成所有类型的内容。"""
+    if isinstance(payload, list):
+        news_ids = payload
+        quality_profile = None
+    elif isinstance(payload, dict):
+        model_payload = GenerateAllRequest.model_validate(payload)
+        news_ids = model_payload.news_ids
+        quality_profile = _normalize_quality_profile(model_payload.quality_profile)
+    else:
+        raise HTTPException(status_code=400, detail="请求体格式错误，应为新闻ID数组或对象")
+
     selected_news = await _resolve_selected_news(news_ids)
+    logger.info(
+        "Generate all request requested_profile=%s news_count=%s",
+        quality_profile or "inherit",
+        len(selected_news),
+    )
 
     try:
         stream_script, article, deep_dive, ppt_script, flash_report, platform_pack = await asyncio.gather(
-            generator.generate_stream_script(selected_news),
-            generator.generate_article(selected_news),
+            generator.generate_stream_script(selected_news, quality_profile=quality_profile),
+            generator.generate_article(selected_news, quality_profile=quality_profile),
             generator.generate_deep_dive(selected_news),
             generator.generate_ppt_script(selected_news),
             generator.generate_flash_report(selected_news),
@@ -490,11 +529,17 @@ async def generate_stream(request: Request, payload: GenerateRequest):
     """通过 SSE 流式返回生成进度和内容。"""
     selected_news = await _resolve_selected_news(payload.news_ids)
     requested_type = "ppt_script" if payload.content_type == "ppt" else payload.content_type
+    quality_profile = _normalize_quality_profile(payload.quality_profile)
 
     async def event_stream():
         started = time.monotonic()
         persona_dict = payload.persona.model_dump() if payload.persona else None
-        logger.info("SSE generation started type=%s news_count=%s", requested_type, len(selected_news))
+        logger.info(
+            "SSE generation started type=%s requested_profile=%s news_count=%s",
+            requested_type,
+            quality_profile or "inherit",
+            len(selected_news),
+        )
         try:
             yield _sse("status", {"step": 0, "text": "准备生成", "tip": "正在校验新闻与参数"})
 
@@ -506,6 +551,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         title=payload.title or "",
                         focus_topic=payload.focus_topic or "",
                         persona=persona_dict,
+                        quality_profile=quality_profile,
                     )
                 )
                 deep_task = asyncio.create_task(
@@ -542,6 +588,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                     duration=payload.duration or 30,
                     style=payload.style or "专业",
                     persona=persona_dict,
+                    quality_profile=quality_profile,
                 ):
                     if await request.is_disconnected():
                         logger.info("SSE client disconnected during all-generation stream")
@@ -587,6 +634,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         duration=payload.duration or 30,
                         style=payload.style or "专业",
                         persona=persona_dict,
+                        quality_profile=quality_profile,
                     ):
                         if await request.is_disconnected():
                             logger.info("SSE client disconnected during stream_script")
@@ -601,6 +649,7 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         title=payload.title or "",
                         focus_topic=payload.focus_topic or "",
                         persona=persona_dict,
+                        quality_profile=quality_profile,
                     )
                 elif requested_type == "deep_dive":
                     result = await generator.generate_deep_dive(
