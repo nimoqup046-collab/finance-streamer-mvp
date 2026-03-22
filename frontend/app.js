@@ -94,6 +94,17 @@ createApp({
             // 时间
             currentTime: '',
             timer: null,
+            statusTimer: null,
+
+            // 质量路由状态
+            qualityRoutingState: {
+                loaded: false,
+                enabled: false,
+                provider: null,
+                routedTypes: [],
+                budget: {},
+                error: '',
+            },
 
             // Tab配置
             resultTabs: [
@@ -174,9 +185,98 @@ createApp({
         readTime() {
             return Math.max(1, Math.ceil(this.wordCount / 500));
         },
+
+        qualityRoutingBanner() {
+            if (!this.qualityRoutingState.loaded) {
+                return {
+                    level: 'info',
+                    text: '质量路由状态读取中...',
+                    detail: '正在连接后端状态接口',
+                };
+            }
+
+            if (this.qualityRoutingState.error) {
+                return {
+                    level: 'info',
+                    text: '质量路由状态读取失败',
+                    detail: '已按默认配置继续运行，不影响基础功能',
+                };
+            }
+
+            const budget = this.qualityRoutingState.budget || {};
+            const routedTypes = this.qualityRoutingState.routedTypes || [];
+            const routedLabels = routedTypes.length
+                ? routedTypes.map((type) => this.getContentTypeLabel(type)).join(' / ')
+                : '未配置';
+
+            if (this.qualityRoutingState.enabled && budget.exceeded && budget.auto_fallback) {
+                return {
+                    level: 'warning',
+                    text: '预算护栏已触发，质量路由临时回退',
+                    detail: `当前已回退基础模型；最近1小时 $${this.formatUsd(budget.recent_1h_usd)}，最近24小时 $${this.formatUsd(budget.recent_24h_usd)}`,
+                };
+            }
+
+            if (this.qualityRoutingState.enabled) {
+                return {
+                    level: 'success',
+                    text: '质量路由已开启',
+                    detail: `${routedLabels} 使用 OpenRouter；最近1小时 $${this.formatUsd(budget.recent_1h_usd)}`,
+                };
+            }
+
+            return {
+                level: 'info',
+                text: '质量路由未开启',
+                detail: '当前全部走基础模型链路',
+            };
+        },
     },
 
     methods: {
+        formatUsd(value) {
+            const num = Number(value || 0);
+            if (!Number.isFinite(num)) return '0.000';
+            return num.toFixed(3);
+        },
+
+        getContentTypeLabel(type) {
+            const labels = {
+                stream_script: '直播稿',
+                article: '公众号',
+                deep_dive: '深度长文',
+                ppt_script: 'PPT脚本',
+                flash_report: '快报速评',
+            };
+            return labels[type] || type;
+        },
+
+        async fetchQualityStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/api/status`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                this.qualityRoutingState = {
+                    loaded: true,
+                    enabled: Boolean(data.quality_routing),
+                    provider: data.quality_router_provider || null,
+                    routedTypes: Array.isArray(data.quality_routed_types) ? data.quality_routed_types : [],
+                    budget: data.quality_routing_budget || {},
+                    error: '',
+                };
+            } catch (error) {
+                console.warn('获取质量路由状态失败:', error);
+                this.qualityRoutingState = {
+                    ...this.qualityRoutingState,
+                    loaded: true,
+                    error: error.message || 'unknown_error',
+                };
+            }
+        },
+
         buildHeaders() {
             const headers = { 'Content-Type': 'application/json' };
             if (this.apiKey) {
@@ -974,6 +1074,8 @@ createApp({
         this.updateTime();
         this.timer = setInterval(this.updateTime, 1000);
         this.fetchNews();
+        this.fetchQualityStatus();
+        this.statusTimer = setInterval(() => this.fetchQualityStatus(), 30000);
         this.loadHistory();
         this.loadFavorites();
         document.addEventListener('keydown', this.handleKeyboard);
@@ -982,6 +1084,7 @@ createApp({
     beforeUnmount() {
         if (this.timer) clearInterval(this.timer);
         if (this.progressTimer) clearInterval(this.progressTimer);
+        if (this.statusTimer) clearInterval(this.statusTimer);
         document.removeEventListener('keydown', this.handleKeyboard);
     },
 }).mount('#app');

@@ -26,6 +26,14 @@
                     </button>
                 </div>
             </div>
+            <div class="header-quality-bar" :class="`status-${qualityRoutingBanner.level}`">
+                <div class="container">
+                    <div class="header-quality-content">
+                        <span class="header-quality-title">{{ qualityRoutingBanner.text }}</span>
+                        <span class="header-quality-detail">{{ qualityRoutingBanner.detail }}</span>
+                    </div>
+                </div>
+            </div>
         </header>
 
         <!-- 历史记录面板 -->

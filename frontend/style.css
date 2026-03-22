@@ -125,6 +125,53 @@ body {
     animation: spin 1s linear infinite;
 }
 
+.header-quality-bar {
+    margin-top: 10px;
+    border-top: 1px dashed var(--border);
+    padding-top: 10px;
+}
+
+.header-quality-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.header-quality-title {
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.header-quality-detail {
+    color: var(--text-light);
+}
+
+.header-quality-bar.status-success .header-quality-content {
+    background: var(--success-light);
+    border: 1px solid #86efac;
+    color: #166534;
+}
+
+.header-quality-bar.status-warning .header-quality-content {
+    background: var(--warning-light);
+    border: 1px solid #fcd34d;
+    color: #92400e;
+}
+
+.header-quality-bar.status-warning .header-quality-detail {
+    color: #b45309;
+}
+
+.header-quality-bar.status-info .header-quality-content {
+    background: var(--primary-light);
+    border: 1px solid #bfdbfe;
+    color: #1d4ed8;
+}
+
 /* ==================== 历史面板 ==================== */
 .history-overlay {
     position: fixed;
@@ -1388,6 +1435,16 @@ body {
         padding: 4px 8px;
         font-size: 11px;
     }
+
+    .header-quality-content {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .header-quality-title {
+        white-space: normal;
+    }
 }
 
 /* ==================== 内容矩阵按钮 ==================== */
@@ -1564,4 +1621,3 @@ body {
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     line-height: 1.5;
 }
-
