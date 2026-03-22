@@ -58,6 +58,8 @@ createApp({
             generating: false,
             generatingPpt: false,
             checkingCompliance: false,
+            analyzingSignals: false,
+            signalResult: null,
 
             // 进度步骤
             progressStep: 0,
@@ -113,6 +115,7 @@ createApp({
                 { key: 'deep_dive', label: '📄 深度长文' },
                 { key: 'ppt_script', label: '🖥️ PPT脚本' },
                 { key: 'flash_report', label: '⚡ 快报速评' },
+                { key: 'platform_pack', label: '📦 平台格式包' },
             ],
 
             // 内容矩阵 Tab 配置（核心壁垒 3）
@@ -161,12 +164,16 @@ createApp({
                 ppt_script: '🖥️ PPT演讲脚本',
                 moments_copy: '📣 朋友圈预热文案（50字诱饵）',
                 flash_report: '⚡ 快报速评（30秒抓主线版）',
+                platform_pack: '📦 平台格式包（短视频+社媒）',
             };
             return titles[this.resultType] || '生成结果';
         },
 
         displayContent() {
             if (!this.result) return '';
+            if (this.resultType === 'platform_pack' && typeof this.result === 'object') {
+                return this.formatPlatformPack(this.result);
+            }
             if (this.resultType === 'article' && this.result.content) {
                 return this.result.content;
             }
@@ -247,6 +254,7 @@ createApp({
                 deep_dive: '深度长文',
                 ppt_script: 'PPT脚本',
                 flash_report: '快报速评',
+                platform_pack: '平台格式包',
             };
             return labels[type] || type;
         },
@@ -275,6 +283,83 @@ createApp({
                     error: error.message || 'unknown_error',
                 };
             }
+        },
+
+        normalizeSignalResult(raw) {
+            const fallback = {
+                headline: '信号提取完成',
+                summary: '已生成结构化信号，请结合实时盘面验证。',
+                urgency: '中',
+                core_data_points: [],
+                beneficiaries: [],
+                risk_exposures: [],
+                common_theme: '暂无',
+                contrarian_signal: '暂无',
+                watch_list: [],
+            };
+            if (!raw || typeof raw !== 'object') return fallback;
+            return {
+                ...fallback,
+                ...raw,
+                core_data_points: Array.isArray(raw.core_data_points) ? raw.core_data_points : fallback.core_data_points,
+                beneficiaries: Array.isArray(raw.beneficiaries) ? raw.beneficiaries : fallback.beneficiaries,
+                risk_exposures: Array.isArray(raw.risk_exposures) ? raw.risk_exposures : fallback.risk_exposures,
+                watch_list: Array.isArray(raw.watch_list) ? raw.watch_list : fallback.watch_list,
+            };
+        },
+
+        async extractSignals() {
+            if (this.selectedCount === 0) {
+                this.showToastMessage('请先选择新闻', 'warning');
+                return;
+            }
+
+            this.analyzingSignals = true;
+            try {
+                const response = await fetch(`${API_BASE}/api/news/score`, {
+                    method: 'POST',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify({ news_ids: this.selectedNews }),
+                });
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                this.signalResult = this.normalizeSignalResult(data.signals);
+                this.showToastMessage('✅ 投资信号提取完成', 'success');
+            } catch (error) {
+                console.error('投资信号提取失败:', error);
+                this.showToastMessage(`❌ 投资信号提取失败：${error.message}`, 'error');
+            } finally {
+                this.analyzingSignals = false;
+            }
+        },
+
+        formatPlatformPack(pack) {
+            if (!pack || typeof pack !== 'object') return '';
+            const douyin = pack.douyin_oral || {};
+            const xhs = pack.xiaohongshu || {};
+            const weibo = Array.isArray(pack.weibo_versions) ? pack.weibo_versions : [];
+            const moments = Array.isArray(pack.moments_versions) ? pack.moments_versions : [];
+
+            return [
+                '【抖音口播稿】',
+                `15秒：\n${douyin['15s'] || ''}`,
+                `30秒：\n${douyin['30s'] || ''}`,
+                `60秒：\n${douyin['60s'] || ''}`,
+                '',
+                '【小红书图文】',
+                `封面标题：\n${(xhs.cover_titles || []).map((item, idx) => `${idx + 1}. ${item}`).join('\n')}`,
+                `正文：\n${xhs.content || ''}`,
+                `话题标签：\n${(xhs.hashtags || []).join(' ')}`,
+                '',
+                '【微博热评体】',
+                ...weibo.map((item, idx) => `${idx + 1}. ${item.style || '版本'}\n${item.text || ''}`),
+                '',
+                '【朋友圈文案】',
+                ...moments.map((item, idx) => `${idx + 1}. ${item}`),
+            ].join('\n');
         },
 
         buildHeaders() {
@@ -553,6 +638,8 @@ createApp({
             if (data.article) this.saveToHistory('article', data.article);
             if (data.deep_dive) this.saveToHistory('deep_dive', data.deep_dive);
             if (data.ppt_script) this.saveToHistory('ppt_script', data.ppt_script);
+            if (data.flash_report) this.saveToHistory('flash_report', data.flash_report);
+            if (data.platform_pack) this.saveToHistory('platform_pack', data.platform_pack);
         },
 
         // 生成内容
@@ -566,6 +653,7 @@ createApp({
             this.result = null;
             this.allResults = null;
             this.matrixResult = null;
+            this.signalResult = null;
             this.resultType = type;
             this.editingContent = false;
             this.streamingPreview = '';
@@ -635,6 +723,7 @@ createApp({
             this.result = null;
             this.allResults = null;
             this.matrixResult = null;
+            this.signalResult = null;
             this.editingContent = false;
             this.streamingPreview = '';
             this.complianceResult = null;
@@ -680,6 +769,8 @@ createApp({
                             this.saveToHistory('article', event.results.article);
                             this.saveToHistory('deep_dive', event.results.deep_dive);
                             if (event.results.ppt_script) this.saveToHistory('ppt_script', event.results.ppt_script);
+                            if (event.results.flash_report) this.saveToHistory('flash_report', event.results.flash_report);
+                            if (event.results.platform_pack) this.saveToHistory('platform_pack', event.results.platform_pack);
                         },
                         error: (event) => {
                             throw new Error(event.message || '流式生成失败');
@@ -714,6 +805,7 @@ createApp({
             this.result = null;
             this.allResults = null;
             this.matrixResult = null;
+            this.signalResult = null;
             this.editingContent = false;
             this.streamingPreview = '';
             this.complianceResult = null;
@@ -878,6 +970,7 @@ createApp({
                 else if (tab === 'deep_dive') this.result = this.allResults.deep_dive;
                 else if (tab === 'ppt_script') this.result = this.allResults.ppt_script;
                 else if (tab === 'flash_report') this.result = this.allResults.flash_report;
+                else if (tab === 'platform_pack') this.result = this.allResults.platform_pack;
             }
         },
 
@@ -952,6 +1045,7 @@ createApp({
                 ppt_script: `PPT脚本_${this.getDateTimeString()}.md`,
                 moments_copy: `朋友圈预热_${this.getDateTimeString()}.txt`,
                 flash_report: `快报速评_${this.getDateTimeString()}.txt`,
+                platform_pack: `平台格式包_${this.getDateTimeString()}.md`,
             }[this.resultType] || `生成内容_${this.getDateTimeString()}.txt`;
 
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -975,6 +1069,7 @@ createApp({
                 ppt_script: 'PPT脚本',
                 moments_copy: '朋友圈预热',
                 flash_report: '快报速评',
+                platform_pack: '平台格式包',
             };
             const text = typeof content === 'string'
                 ? content

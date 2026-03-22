@@ -124,10 +124,57 @@
                                 已选 {{ selectedCount }} 条
                             </span>
                             <button
+                                @click="extractSignals"
+                                :disabled="selectedCount === 0 || analyzingSignals"
+                                class="btn btn-signal btn-sm"
+                            >{{ analyzingSignals ? '🔍 提取中...' : '🔍 提取投资信号' }}</button>
+                            <button
                                 @click="generateContent('stream_script')"
                                 :disabled="selectedCount === 0 || generating"
                                 class="btn btn-primary btn-sm"
                             >📝 快速生成</button>
+                        </div>
+                    </div>
+
+                    <div v-if="signalResult" class="signal-panel">
+                        <div class="signal-header">
+                            <h3>🔍 投资信号速览</h3>
+                            <button @click="signalResult = null" class="btn-small btn-close">✕</button>
+                        </div>
+                        <div class="signal-summary">
+                            <strong>{{ signalResult.headline }}</strong>
+                            <span class="signal-urgency" :data-level="signalResult.urgency">紧迫度：{{ signalResult.urgency }}</span>
+                        </div>
+                        <p class="signal-text">{{ signalResult.summary }}</p>
+                        <div class="signal-grid">
+                            <div class="signal-block">
+                                <h4>核心数据</h4>
+                                <ul>
+                                    <li v-for="(item, idx) in signalResult.core_data_points" :key="`core-${idx}`">{{ item }}</li>
+                                </ul>
+                            </div>
+                            <div class="signal-block">
+                                <h4>受益方向</h4>
+                                <ul>
+                                    <li v-for="(item, idx) in signalResult.beneficiaries" :key="`win-${idx}`">{{ item }}</li>
+                                </ul>
+                            </div>
+                            <div class="signal-block">
+                                <h4>风险敞口</h4>
+                                <ul>
+                                    <li v-for="(item, idx) in signalResult.risk_exposures" :key="`risk-${idx}`">{{ item }}</li>
+                                </ul>
+                            </div>
+                            <div class="signal-block">
+                                <h4>验证清单</h4>
+                                <ul>
+                                    <li v-for="(item, idx) in signalResult.watch_list" :key="`watch-${idx}`">{{ item }}</li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="signal-footer">
+                            <span>共同主线：{{ signalResult.common_theme }}</span>
+                            <span>反直觉判断：{{ signalResult.contrarian_signal }}</span>
                         </div>
                     </div>
 
@@ -277,6 +324,15 @@
                             <span class="icon">⚡</span>
                             <span class="text">快报速评</span>
                             <span class="gen-hint">社媒速发</span>
+                        </button>
+                        <button
+                            @click="generateContent('platform_pack')"
+                            :disabled="selectedCount === 0 || generating"
+                            class="gen-btn gen-platform"
+                        >
+                            <span class="icon">📦</span>
+                            <span class="text">平台格式包</span>
+                            <span class="gen-hint">抖音/小红书/微博</span>
                         </button>
                         <button
                             @click="generateAll"

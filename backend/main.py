@@ -68,7 +68,7 @@ class PersonaConfig(BaseModel):
 
 class GenerateRequest(BaseModel):
     news_ids: List[str]
-    content_type: str  # stream_script, article, deep_dive, ppt_script, flash_report, all
+    content_type: str  # stream_script, article, deep_dive, ppt_script, flash_report, platform_pack, all
     duration: Optional[int] = 30
     style: Optional[str] = "专业"
     title: Optional[str] = ""
@@ -85,6 +85,11 @@ class MatrixRequest(BaseModel):
     style: Optional[str] = "专业"
     live_time: Optional[str] = ""      # 直播时间，如"20"表示晚8点
     persona: Optional[PersonaConfig] = None
+
+
+class NewsScoreRequest(BaseModel):
+    news_ids: List[str]
+    focus_topic: Optional[str] = ""
 
 class NewsItem(BaseModel):
     id: str
@@ -286,6 +291,22 @@ async def search_news(q: str = Query(..., min_length=1, description="搜索关�
     ]
     return {"data": matched, "count": len(matched), "keyword": q}
 
+
+@app.post("/api/news/score", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
+async def score_news(req: NewsScoreRequest):
+    """提取选中新闻的投资信号速览（结构化结果）。"""
+    selected_news = await _resolve_selected_news(req.news_ids)
+    try:
+        result = await generator.extract_news_signals(selected_news, focus_topic=req.focus_topic or "")
+        return {
+            "signals": result,
+            "news_count": len(selected_news),
+            "generated_at": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error("投资信号提取失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="投资信号提取失败，请稍后重试")
+
 # 生成内容
 @app.post("/api/generate", dependencies=[Depends(verify_api_key), Depends(enforce_generate_rate_limit)])
 async def generate_content(request: GenerateRequest):
@@ -359,6 +380,18 @@ async def generate_content(request: GenerateRequest):
                 "generated_at": datetime.now().isoformat()
             }
 
+        if requested_type == "platform_pack":
+            content = await generator.generate_platform_pack(
+                selected_news,
+                focus_topic=request.focus_topic or request.title or "",
+                persona=request.persona.model_dump() if request.persona else None,
+            )
+            return {
+                "type": "platform_pack",
+                "content": content,
+                "generated_at": datetime.now().isoformat()
+            }
+
         raise HTTPException(status_code=400, detail="不支持的内容类型")
 
     except HTTPException:
@@ -374,17 +407,21 @@ async def generate_all(news_ids: List[str] = Body(...)):
     selected_news = await _resolve_selected_news(news_ids)
 
     try:
-        stream_script, article, deep_dive, ppt_script = await asyncio.gather(
+        stream_script, article, deep_dive, ppt_script, flash_report, platform_pack = await asyncio.gather(
             generator.generate_stream_script(selected_news),
             generator.generate_article(selected_news),
             generator.generate_deep_dive(selected_news),
             generator.generate_ppt_script(selected_news),
+            generator.generate_flash_report(selected_news),
+            generator.generate_platform_pack(selected_news),
         )
         return {
             "stream_script": stream_script,
             "article": article,
             "deep_dive": deep_dive,
             "ppt_script": ppt_script,
+            "flash_report": flash_report,
+            "platform_pack": platform_pack,
             "generated_at": datetime.now().isoformat()
         }
     except Exception as e:
@@ -485,6 +522,19 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         persona=persona_dict,
                     )
                 )
+                flash_report_task = asyncio.create_task(
+                    generator.generate_flash_report(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
+                )
+                platform_pack_task = asyncio.create_task(
+                    generator.generate_platform_pack(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                        persona=persona_dict,
+                    )
+                )
 
                 raw_script = []
                 async for chunk in generator.stream_stream_script(
@@ -511,11 +561,19 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                 ppt_script = await ppt_script_task
                 yield _sse("result", {"result_type": "ppt_script", "result": ppt_script})
 
+                flash_report = await flash_report_task
+                yield _sse("result", {"result_type": "flash_report", "result": flash_report})
+
+                platform_pack = await platform_pack_task
+                yield _sse("result", {"result_type": "platform_pack", "result": platform_pack})
+
                 results = {
                     "stream_script": stream_script,
                     "article": article,
                     "deep_dive": deep_dive,
                     "ppt_script": ppt_script,
+                    "flash_report": flash_report,
+                    "platform_pack": platform_pack,
                     "generated_at": datetime.now().isoformat(),
                 }
                 yield _sse("complete", {"type": "all", "results": results})
@@ -556,6 +614,11 @@ async def generate_stream(request: Request, payload: GenerateRequest):
                         focus_topic=payload.focus_topic or payload.title or "",
                         persona=persona_dict,
                     )
+                elif requested_type == "flash_report":
+                    result = await generator.generate_flash_report(
+                        selected_news,
+                        focus_topic=payload.focus_topic or payload.title or "",
+                    )
                 else:
                     raise HTTPException(status_code=400, detail="不支持的流式内容类型")
 
@@ -593,6 +656,8 @@ async def get_status():
             "persona_injection": True,   # 核心壁垒 2：主播人设/IP记忆库
             "content_matrix": True,      # 核心壁垒 3：一键内容矩阵
             "flash_report": True,
+            "news_score": True,
+            "platform_pack": True,
             "infographic": False  # 待开发
         }
     }

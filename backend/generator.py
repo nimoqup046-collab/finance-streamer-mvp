@@ -182,6 +182,19 @@ FLASH_REPORT_SYSTEM_PROMPT = """你是一位擅长写“快报速评”的财经
 - 结尾给一句可截图传播的短金句
 """
 
+NEWS_SCORE_SYSTEM_PROMPT = """你是财经研究团队的“信号提取分析师”。
+
+【任务目标】
+- 不是复述新闻，而是把多条新闻提炼成可执行的投资观察框架
+- 输出要结构化、可用于主播开播前 1 分钟速览
+- 优先提炼：核心数据、受益方、风险点、共同主线、验证指标
+
+【输出要求】
+- 严格输出 JSON 对象
+- 不要 markdown，不要解释
+- 所有字段都要给出内容；若信息不足，明确写“仍待验证”
+"""
+
 MASTER_SYSTEM_PROMPT = DEEP_DIVE_SYSTEM_PROMPT
 
 QUALITY_CONTROL_RULES = """
@@ -619,6 +632,56 @@ class ContentGenerator:
             ],
         }
 
+    def _fallback_news_signals(self, news_items: List[Dict], focus_topic: str = "") -> Dict[str, Any]:
+        lead = news_items[0] if news_items else {"title": "今日主线仍待验证", "category": "财经", "source": "系统"}
+        categories = list(dict.fromkeys(item.get("category", "财经") for item in news_items[:8]))
+        category_hint = "、".join(categories[:3]) if categories else "财经"
+        watch_list = [
+            "主线板块是否出现连续资金流入",
+            "政策或产业数据是否给出二次确认",
+            "高位情绪是否转化为基本面验证",
+        ]
+        return {
+            "headline": focus_topic or f"主线切换信号：{lead['title'][:24]}",
+            "summary": f"当前新闻共振主要集中在{category_hint}方向，短期情绪已经点火，但中期趋势仍需看验证数据是否接力。",
+            "urgency": "中",
+            "core_data_points": [
+                f"样本新闻数：{len(news_items)}",
+                f"主线分类：{category_hint}",
+                "关键结论：热度已出现，趋势待确认",
+            ],
+            "beneficiaries": ["先拿到订单/价格验证的龙头标的", "具备兑现路径的核心产业链环节"],
+            "risk_exposures": ["只靠消息驱动的跟风交易", "预期先行但业绩验证滞后的高估值方向"],
+            "common_theme": "市场在重新定价主线，而非单条新闻本身。",
+            "contrarian_signal": "最热的方向不一定最优，真正优势在于最先拿到验证数据的细分环节。",
+            "watch_list": watch_list,
+        }
+
+    def _normalize_news_signals(self, raw: Dict[str, Any], news_items: List[Dict], focus_topic: str = "") -> Dict[str, Any]:
+        fallback = self._fallback_news_signals(news_items, focus_topic)
+        if not isinstance(raw, dict):
+            return fallback
+
+        result = dict(fallback)
+        for key in ("headline", "summary", "common_theme", "contrarian_signal"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()
+
+        urgency = raw.get("urgency")
+        if isinstance(urgency, str) and urgency.strip() in {"高", "中", "低"}:
+            result["urgency"] = urgency.strip()
+
+        for key, max_items in (
+            ("core_data_points", 5),
+            ("beneficiaries", 4),
+            ("risk_exposures", 4),
+            ("watch_list", 5),
+        ):
+            result[key] = self._normalize_text_list(raw.get(key), fallback.get(key, []), max_items=max_items)
+
+        return result
+
     def _extract_json(self, text: str) -> Dict[str, Any]:
         text = (text or "").strip()
         if not text:
@@ -827,6 +890,63 @@ class ContentGenerator:
             )
         except Exception:
             return None
+
+    async def extract_news_signals(self, news_items: List[Dict], focus_topic: str = "") -> Dict[str, Any]:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="输出一份开播前可直接使用的投资信号速览，帮助快速抓住主线和验证点",
+            style="洞察",
+            route_content_type="article",
+        )
+        prompt = f"""请基于以下新闻和编辑部 brief，输出一份“投资信号速览”。
+
+【可选聚焦主题】
+{focus_topic or "未指定，按新闻主线自动提炼"}
+
+【编辑部总论点】
+{editorial_brief.get('lead_angle', '')}
+
+【核心矛盾】
+{chr(10).join(f"- {item}" for item in editorial_brief.get('core_conflicts', []))}
+
+【因果链】
+{chr(10).join(f"- {item}" for item in editorial_brief.get('causal_chain', []))}
+
+【验证指标】
+{chr(10).join(f"- {item}" for item in editorial_brief.get('verification_signals', []))}
+
+【新闻池】
+{self._news_snapshot(news_items)}
+
+严格输出 JSON，字段如下：
+{{
+  "headline": "一句话主标题（18字以内）",
+  "summary": "2-3句摘要，先讲结论后讲原因",
+  "urgency": "高/中/低",
+  "core_data_points": ["3-5条关键数据或事实"],
+  "beneficiaries": ["2-4条主要受益方"],
+  "risk_exposures": ["2-4条主要风险敞口"],
+  "common_theme": "把多条新闻串起来的共同主线",
+  "contrarian_signal": "1条反直觉但可验证的判断",
+  "watch_list": ["3-5条接下来最该盯的验证指标"]
+}}
+"""
+
+        try:
+            response_format = {"type": "json_object"} if self.provider != "anthropic" else None
+            raw = await self._call_ai(
+                prompt,
+                max_tokens=1200,
+                system_prompt=NEWS_SCORE_SYSTEM_PROMPT,
+                temperature=0.25,
+                response_format=response_format,
+                content_type="article",
+            )
+            parsed = self._extract_json(raw)
+            return self._normalize_news_signals(parsed, news_items, focus_topic)
+        except Exception as e:
+            logger.error("News signal extraction error: %s | %s", e, self._error_context())
+            return self._fallback_news_signals(news_items, focus_topic)
 
     def _build_stream_script_prompt(
         self,
@@ -1120,6 +1240,111 @@ class ContentGenerator:
         except Exception as e:
             logger.error("Flash report generation error: %s | %s", e, self._error_context())
             return self._generate_fallback_flash_report(news_items)
+
+    async def generate_platform_pack(
+        self,
+        news_items: List[Dict],
+        focus_topic: str = "",
+        persona: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
+        editorial_brief = await self._prepare_editorial_brief(
+            news_items,
+            goal="为同一财经主线生成短视频与社媒多平台可直接发布的内容包",
+            style="洞察",
+            route_content_type="article",
+        )
+        prompt = f"""请基于以下素材，输出“多平台发布包”。
+{self._persona_section(persona)}
+【可选聚焦主题】
+{focus_topic or "未指定，按新闻主线自动提炼"}
+
+【总论点】
+{editorial_brief.get('lead_angle', '')}
+
+【反直觉判断】
+{editorial_brief.get('contrarian_take', '')}
+
+【新闻池】
+{self._news_snapshot(news_items)}
+
+输出严格 JSON，结构如下：
+{{
+  "douyin_oral": {{
+    "15s": "15秒口播稿，开头3秒必须有钩子，含[停顿]/[重读]",
+    "30s": "30秒口播稿，结构：钩子-主判断-行动提醒",
+    "60s": "60秒口播稿，结构：钩子-背景-判断-风险提示"
+  }},
+  "xiaohongshu": {{
+    "cover_titles": ["3个封面标题，风格要明显不同"],
+    "content": "1篇可直接发布图文正文（400-650字）",
+    "hashtags": ["6-10个话题标签"]
+  }},
+  "weibo_versions": [
+    {{"style": "强立场", "text": "120字以内"}},
+    {{"style": "数据洞察", "text": "120字以内"}},
+    {{"style": "问题引导", "text": "120字以内"}}
+  ],
+  "moments_versions": ["2条朋友圈文案，每条45-70字，第一人称、有温度"]
+}}
+
+硬性要求：
+- 内容可以有观点，但不能出现收益承诺、内幕消息、必涨必跌等违规表述
+- 每个平台文案都要体现“这意味着什么”
+- 小红书正文要有可读结构，不要写成摘要拼盘
+"""
+        try:
+            response_format = {"type": "json_object"} if self.provider != "anthropic" else None
+            raw = await self._call_ai(
+                prompt,
+                max_tokens=2800,
+                system_prompt=ARTICLE_SYSTEM_PROMPT,
+                temperature=0.65,
+                response_format=response_format,
+                content_type="article",
+            )
+            parsed = self._extract_json(raw)
+
+            douyin = parsed.get("douyin_oral") if isinstance(parsed, dict) else {}
+            xhs = parsed.get("xiaohongshu") if isinstance(parsed, dict) else {}
+            weibo_versions = parsed.get("weibo_versions") if isinstance(parsed, dict) else []
+            moments_versions = parsed.get("moments_versions") if isinstance(parsed, dict) else []
+
+            normalized = {
+                "douyin_oral": {
+                    "15s": str((douyin or {}).get("15s", "")).strip(),
+                    "30s": str((douyin or {}).get("30s", "")).strip(),
+                    "60s": str((douyin or {}).get("60s", "")).strip(),
+                },
+                "xiaohongshu": {
+                    "cover_titles": self._normalize_text_list((xhs or {}).get("cover_titles"), [], max_items=3),
+                    "content": str((xhs or {}).get("content", "")).strip(),
+                    "hashtags": self._normalize_text_list((xhs or {}).get("hashtags"), [], max_items=10),
+                },
+                "weibo_versions": [],
+                "moments_versions": self._normalize_text_list(moments_versions, [], max_items=2),
+            }
+
+            if isinstance(weibo_versions, list):
+                for item in weibo_versions[:3]:
+                    if isinstance(item, dict):
+                        style = str(item.get("style", "")).strip()
+                        text = str(item.get("text", "")).strip()
+                        if style or text:
+                            normalized["weibo_versions"].append({"style": style or "版本", "text": text})
+
+            required_missing = (
+                not normalized["douyin_oral"]["30s"]
+                or not normalized["xiaohongshu"]["content"]
+                or not normalized["weibo_versions"]
+                or len(normalized["moments_versions"]) < 1
+            )
+            if required_missing:
+                raise ValueError("platform_pack required fields missing")
+
+            return normalized
+        except Exception as e:
+            logger.error("Platform pack generation error: %s | %s", e, self._error_context())
+            return self._generate_fallback_platform_pack(news_items, focus_topic)
 
     async def _analyze_news_outline(self, news_items: List[Dict], focus_topic: str, date_str: str) -> str:
         news_details = "\n".join([f"• {n['title']}（{n['source']}）" for n in news_items[:6]])
@@ -1895,6 +2120,41 @@ N+4. 记忆点与先行指标
         lines.append("一句话总结：看主线，不要只看热闹。")
         lines.append("下一步重点看：政策跟进、资金连续性和基本面验证。")
         return "\n".join(lines)
+
+    def _generate_fallback_platform_pack(self, news_items: List[Dict], focus_topic: str = "") -> Dict[str, Any]:
+        topic = focus_topic or (news_items[0]["title"] if news_items else "今日财经主线")
+        return {
+            "douyin_oral": {
+                "15s": f"多数人只看热搜，[停顿]但真正要看的，是{topic[:16]}背后的预期差。[重读]今晚我讲透。",
+                "30s": f"你以为今天最热的是消息本身？[停顿]其实是主线重新定价。围绕“{topic[:18]}”，今晚我只讲三件事：为什么是现在、谁先受益、明天看什么验证。",
+                "60s": f"今天市场最容易看错的，是把热度当趋势。围绕“{topic[:18]}”，我们拆三层：第一，情绪为什么被点燃；第二，谁会先拿到兑现；第三，哪些信号若没出现，这波就只是短炒。最后我会给你一个明天就能盯的验证表。",
+            },
+            "xiaohongshu": {
+                "cover_titles": [
+                    f"{topic[:14]}，你可能看反了",
+                    "今天这条主线，正在重写逻辑",
+                    "别只看热度，关键在这3点",
+                ],
+                "content": (
+                    f"今天最值得聊的不是新闻数量，而是主线是否真的切换到“{topic[:20]}”。\n\n"
+                    "很多人会在第一时间被情绪带着走，但真正有效的判断要看三件事：\n"
+                    "1）有没有连续资金和数据验证；\n"
+                    "2）谁是最先兑现的受益方；\n"
+                    "3）热度退潮后逻辑还能不能站住。\n\n"
+                    "如果你也在做内容或投资判断，建议把“新闻热度”降权，把“验证指标”提权。这样你会少很多无效动作。"
+                ),
+                "hashtags": ["#财经解读", "#投资逻辑", "#主线判断", "#市场观察", "#风险提示", "#财经主播"],
+            },
+            "weibo_versions": [
+                {"style": "强立场", "text": f"今天最容易误判的不是方向，而是节奏。围绕“{topic[:18]}”，先看验证再谈趋势。"},
+                {"style": "数据洞察", "text": "单条消息只能解释情绪，连续验证才能解释趋势。别把一日热度当长期逻辑。"},
+                {"style": "问题引导", "text": "如果明天没有出现关键验证信号，这波行情你还会坚持原判断吗？"},
+            ],
+            "moments_versions": [
+                "今天看了很多新闻，真正让我警惕的是主线可能在悄悄切换。今晚我把判断框架讲清楚，欢迎来拍砖。",
+                "我越来越觉得，信息差不重要，判断差才重要。今晚聊聊哪些信号才值得你花时间盯。",
+            ],
+        }
 
     def _generate_fallback_deep_dive(self, news_items: List[Dict]) -> str:
         topic = news_items[0]['title']
