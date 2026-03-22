@@ -46,6 +46,8 @@ OPENROUTER_HTTP_REFERER=
 OPENROUTER_APP_TITLE=finance-streamer-mvp
 OPENROUTER_STREAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1
 OPENROUTER_ARTICLE_MODELS=anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview
+# 是否让 platform_pack 也走 OpenRouter（默认 false，省钱）
+OPENROUTER_PLATFORM_PACK_ROUTING=false
 QUALITY_ROUTING_AUTO_FALLBACK=true
 QUALITY_ROUTING_HOURLY_BUDGET_USD=0.20
 QUALITY_ROUTING_DAILY_BUDGET_USD=1.00
@@ -145,6 +147,7 @@ finance-streamer-mvp/
 | `OPENROUTER_APP_TITLE` | OpenRouter 应用标题 | `finance-streamer-mvp` |
 | `OPENROUTER_STREAM_MODELS` | 直播稿候选模型列表 | `anthropic/claude-sonnet-4.6,google/gemini-3.1-pro-preview,openai/gpt-5.1` |
 | `OPENROUTER_ARTICLE_MODELS` | 公众号候选模型列表 | `anthropic/claude-sonnet-4.6,openai/gpt-5.1,google/gemini-3.1-pro-preview` |
+| `OPENROUTER_PLATFORM_PACK_ROUTING` | 平台格式包是否走 OpenRouter（默认关闭省成本） | `false` |
 | `QUALITY_ROUTING_AUTO_FALLBACK` | 超预算是否自动降级到基础 provider | `true` |
 | `QUALITY_ROUTING_HOURLY_BUDGET_USD` | 质量路由每小时预算上限（0 关闭） | `0.20` |
 | `QUALITY_ROUTING_DAILY_BUDGET_USD` | 质量路由每日预算上限（0 关闭） | `1.00` |
@@ -180,7 +183,7 @@ finance-streamer-mvp/
 
 - 开启 `OPENROUTER_ENABLE_QUALITY_ROUTING=true` 后：
   - `stream_script` 和 `article` 会优先走 OpenRouter 多模型 fallback
-  - `deep_dive`、`ppt_script`、`flash_report` 继续走基础 provider
+  - `deep_dive`、`ppt_script`、`flash_report`、`platform_pack` 默认继续走基础 provider（可通过 `OPENROUTER_PLATFORM_PACK_ROUTING=true` 打开）
 - 如果配置了预算阈值（`QUALITY_ROUTING_*_BUDGET_USD`），超预算时会自动降级到基础 provider（默认 `AI_PROVIDER`）。
 - 推荐 Railway 组合：
   - `AI_PROVIDER=zhipu`
@@ -257,7 +260,7 @@ POST /api/generate
 POST /api/generate/all
 ["id1", "id2"]
 
-// 返回: stream_script / article / deep_dive / ppt_script
+// 返回: stream_script / article / deep_dive / ppt_script / flash_report / platform_pack
 ```
 
 ### 流式生成（SSE）

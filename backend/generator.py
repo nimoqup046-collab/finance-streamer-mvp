@@ -25,6 +25,7 @@ from backend.config import (
     OPENROUTER_HTTP_REFERER,
     OPENROUTER_APP_TITLE,
     OPENROUTER_ENABLE_QUALITY_ROUTING,
+    OPENROUTER_PLATFORM_PACK_ROUTING,
     OPENROUTER_STREAM_MODELS,
     OPENROUTER_ARTICLE_MODELS,
     QUALITY_ROUTING_AUTO_FALLBACK,
@@ -237,10 +238,14 @@ class ContentGenerator:
         self.api_key = AI_API_KEY
         self.api_base = AI_API_BASE
         self.quality_routed_types = ["stream_script", "article"]
+        self.platform_pack_quality_routing = OPENROUTER_PLATFORM_PACK_ROUTING
+        if self.platform_pack_quality_routing:
+            self.quality_routed_types.append("platform_pack")
         self.openrouter_enabled = OPENROUTER_ENABLE_QUALITY_ROUTING and bool(OPENROUTER_API_KEY)
         self.openrouter_models = {
             "stream_script": OPENROUTER_STREAM_MODELS,
             "article": OPENROUTER_ARTICLE_MODELS,
+            "platform_pack": OPENROUTER_ARTICLE_MODELS,
         }
         self.quality_budget_auto_fallback = QUALITY_ROUTING_AUTO_FALLBACK
         self.quality_budget_hourly_usd = max(0.0, float(QUALITY_ROUTING_HOURLY_BUDGET_USD))
@@ -681,6 +686,83 @@ class ContentGenerator:
             result[key] = self._normalize_text_list(raw.get(key), fallback.get(key, []), max_items=max_items)
 
         return result
+
+    def _clip_text(self, value: str, max_len: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1].rstrip() + "…"
+
+    def _normalize_platform_pack_output(
+        self,
+        raw: Dict[str, Any],
+        news_items: List[Dict],
+        focus_topic: str = "",
+    ) -> Dict[str, Any]:
+        fallback = self._generate_fallback_platform_pack(news_items, focus_topic)
+        if not isinstance(raw, dict):
+            return fallback
+
+        normalized = {
+            "douyin_oral": dict(fallback["douyin_oral"]),
+            "xiaohongshu": {
+                "cover_titles": list(fallback["xiaohongshu"]["cover_titles"]),
+                "content": fallback["xiaohongshu"]["content"],
+                "hashtags": list(fallback["xiaohongshu"]["hashtags"]),
+            },
+            "weibo_versions": list(fallback["weibo_versions"]),
+            "moments_versions": list(fallback["moments_versions"]),
+        }
+
+        douyin = raw.get("douyin_oral")
+        if isinstance(douyin, dict):
+            for key, max_len in (("15s", 90), ("30s", 180), ("60s", 330)):
+                candidate = self._clip_text(douyin.get(key, ""), max_len)
+                if candidate:
+                    normalized["douyin_oral"][key] = candidate
+
+        xhs = raw.get("xiaohongshu")
+        if isinstance(xhs, dict):
+            titles = self._normalize_text_list(xhs.get("cover_titles"), [], max_items=3)
+            if titles:
+                normalized["xiaohongshu"]["cover_titles"] = [self._clip_text(item, 26) for item in titles[:3]]
+
+            content = str(xhs.get("content", "")).strip()
+            if len(content) >= 140:
+                normalized["xiaohongshu"]["content"] = content
+
+            hashtags = self._normalize_text_list(xhs.get("hashtags"), [], max_items=10)
+            if hashtags:
+                normalized["xiaohongshu"]["hashtags"] = [
+                    f"#{tag.lstrip('#')}" for tag in hashtags if tag.strip()
+                ][:10]
+
+        weibo_versions = raw.get("weibo_versions")
+        if isinstance(weibo_versions, list):
+            parsed_weibo = []
+            for item in weibo_versions[:3]:
+                if not isinstance(item, dict):
+                    continue
+                style = self._clip_text(item.get("style", ""), 12) or "版本"
+                text = self._clip_text(item.get("text", ""), 140)
+                if text:
+                    parsed_weibo.append({"style": style, "text": text})
+            if parsed_weibo:
+                normalized["weibo_versions"] = parsed_weibo
+
+        moments = raw.get("moments_versions")
+        if isinstance(moments, list):
+            parsed_moments = []
+            for item in moments[:2]:
+                text = self._clip_text(item, 120)
+                if len(text) >= 20:
+                    parsed_moments.append(text)
+            if parsed_moments:
+                while len(parsed_moments) < 2:
+                    parsed_moments.append(fallback["moments_versions"][len(parsed_moments)])
+                normalized["moments_versions"] = parsed_moments
+
+        return normalized
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         text = (text or "").strip()
@@ -1251,18 +1333,31 @@ class ContentGenerator:
             news_items,
             goal="为同一财经主线生成短视频与社媒多平台可直接发布的内容包",
             style="洞察",
-            route_content_type="article",
+            route_content_type="platform_pack" if self.platform_pack_quality_routing else None,
         )
+        topic = focus_topic or (news_items[0]["title"] if news_items else "今日财经主线")
+        verification_signals = "\n".join(f"- {item}" for item in editorial_brief.get("verification_signals", []))
+        winners = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("winners", []))
+        losers = "\n".join(f"- {item}" for item in editorial_brief.get("winners_losers", {}).get("losers", []))
         prompt = f"""请基于以下素材，输出“多平台发布包”。
 {self._persona_section(persona)}
 【可选聚焦主题】
-{focus_topic or "未指定，按新闻主线自动提炼"}
+{topic}
 
 【总论点】
 {editorial_brief.get('lead_angle', '')}
 
 【反直觉判断】
 {editorial_brief.get('contrarian_take', '')}
+
+【受益方】
+{winners or "- 暂无补充"}
+
+【风险方】
+{losers or "- 暂无补充"}
+
+【验证指标】
+{verification_signals or "- 暂无补充"}
 
 【新闻池】
 {self._news_snapshot(news_items)}
@@ -1288,63 +1383,30 @@ class ContentGenerator:
 }}
 
 硬性要求：
+- 每个平台文案都要“先给判断再给原因”，不能只复述新闻
 - 内容可以有观点，但不能出现收益承诺、内幕消息、必涨必跌等违规表述
-- 每个平台文案都要体现“这意味着什么”
-- 小红书正文要有可读结构，不要写成摘要拼盘
+- 口播稿要可直接读，必须包含[停顿]或[重读]节奏标记
+- 小红书正文要有结构：开篇场景 -> 三点拆解 -> 行动提醒，不要写成摘要拼盘
+- 微博三版本风格必须明显不同，不能同义改写
+- 朋友圈文案要像真人说话，避免官话
 """
         try:
             response_format = {"type": "json_object"} if self.provider != "anthropic" else None
+            route_content_type = "platform_pack" if self.platform_pack_quality_routing else None
             raw = await self._call_ai(
                 prompt,
                 max_tokens=2800,
                 system_prompt=ARTICLE_SYSTEM_PROMPT,
                 temperature=0.65,
                 response_format=response_format,
-                content_type="article",
+                content_type=route_content_type,
             )
             parsed = self._extract_json(raw)
-
-            douyin = parsed.get("douyin_oral") if isinstance(parsed, dict) else {}
-            xhs = parsed.get("xiaohongshu") if isinstance(parsed, dict) else {}
-            weibo_versions = parsed.get("weibo_versions") if isinstance(parsed, dict) else []
-            moments_versions = parsed.get("moments_versions") if isinstance(parsed, dict) else []
-
-            normalized = {
-                "douyin_oral": {
-                    "15s": str((douyin or {}).get("15s", "")).strip(),
-                    "30s": str((douyin or {}).get("30s", "")).strip(),
-                    "60s": str((douyin or {}).get("60s", "")).strip(),
-                },
-                "xiaohongshu": {
-                    "cover_titles": self._normalize_text_list((xhs or {}).get("cover_titles"), [], max_items=3),
-                    "content": str((xhs or {}).get("content", "")).strip(),
-                    "hashtags": self._normalize_text_list((xhs or {}).get("hashtags"), [], max_items=10),
-                },
-                "weibo_versions": [],
-                "moments_versions": self._normalize_text_list(moments_versions, [], max_items=2),
-            }
-
-            if isinstance(weibo_versions, list):
-                for item in weibo_versions[:3]:
-                    if isinstance(item, dict):
-                        style = str(item.get("style", "")).strip()
-                        text = str(item.get("text", "")).strip()
-                        if style or text:
-                            normalized["weibo_versions"].append({"style": style or "版本", "text": text})
-
-            required_missing = (
-                not normalized["douyin_oral"]["30s"]
-                or not normalized["xiaohongshu"]["content"]
-                or not normalized["weibo_versions"]
-                or len(normalized["moments_versions"]) < 1
-            )
-            if required_missing:
-                raise ValueError("platform_pack required fields missing")
-
+            normalized = self._normalize_platform_pack_output(parsed, news_items, topic)
             return normalized
         except Exception as e:
             logger.error("Platform pack generation error: %s | %s", e, self._error_context())
-            return self._generate_fallback_platform_pack(news_items, focus_topic)
+            return self._generate_fallback_platform_pack(news_items, topic)
 
     async def _analyze_news_outline(self, news_items: List[Dict], focus_topic: str, date_str: str) -> str:
         news_details = "\n".join([f"• {n['title']}（{n['source']}）" for n in news_items[:6]])
